@@ -4,6 +4,7 @@ defmodule SpectreLens.Page do
   """
 
   alias SpectreLens.CDP.Connection
+  alias SpectreLens.Session
   alias SpectreLens.Tab
   alias SpectreLens.Telemetry
 
@@ -15,44 +16,31 @@ defmodule SpectreLens.Page do
   def new(conn, opts \\ []) when is_pid(conn) do
     target_url = opts[:url] || "about:blank"
 
-    with {:ok, %{"targetId" => target_id}} <-
-           Connection.send_command(conn, "Target.createTarget", %{url: target_url}),
-         {:ok, %{"sessionId" => session_id}} <-
-           Connection.send_command(conn, "Target.attachToTarget", %{
-             targetId: target_id,
-             flatten: true
-           }),
-         {:ok, _} <- cdp(conn, session_id, "Page.enable", %{}, 5_000),
-         {:ok, _} <- cdp(conn, session_id, "DOM.enable", %{}, 5_000),
-         {:ok, _} <- cdp(conn, session_id, "Runtime.enable", %{}, 5_000) do
-      {:ok,
-       %Tab{
-         conn: conn,
-         driver: opts[:driver] || SpectreLens.Protocol.LightpandaCDP,
-         session_id: session_id,
-         target_id: target_id,
-         runtime: opts[:runtime],
-         instance_id: opts[:instance_id],
-         endpoint: opts[:endpoint]
-       }}
+    with {:ok, browser_context_id} <- prepare_browser_context(conn, opts) do
+      case open_target(conn, target_url, browser_context_id, opts) do
+        {:ok, tab} ->
+          {:ok, tab}
+
+        {:error, reason} ->
+          dispose_browser_context(conn, browser_context_id)
+          {:error, reason}
+      end
     end
   end
 
   @doc "Closes a tab target."
   @spec close(Tab.t()) :: :ok | {:error, term()}
-  def close(%Tab{conn: conn, target_id: target_id, runtime: runtime} = tab) do
-    result =
-      if target_id do
-        case Connection.send_command(conn, "Target.closeTarget", %{targetId: target_id}, 5_000) do
-          {:ok, _} -> :ok
-          {:error, _} = error -> error
-        end
-      else
-        :ok
-      end
+  def close(%Tab{runtime: runtime} = tab) do
+    target_result = close_target(tab)
+    context_result = dispose_browser_context(tab.conn, tab.browser_context_id)
 
     if is_pid(runtime), do: SpectreLens.Runtime.release_tab(runtime, tab)
-    result
+
+    case {target_result, context_result} do
+      {{:error, _} = error, _} -> error
+      {:ok, {:error, _} = error} -> error
+      _ -> :ok
+    end
   end
 
   @doc "Sends a raw CDP command to this tab session."
@@ -75,7 +63,7 @@ defmodule SpectreLens.Page do
           :ok
         end
 
-      {result, %{result: result}}
+      span_result(result)
     end)
   end
 
@@ -379,6 +367,201 @@ defmodule SpectreLens.Page do
     end)
   end
 
+  @doc false
+  @spec restore_session(Tab.t(), Session.t() | map(), keyword()) :: :ok | {:error, term()}
+  def restore_session(tab, session, opts \\ [])
+
+  def restore_session(%Tab{} = tab, %Session{} = session, opts) do
+    with {:ok, origin} <- current_origin(tab, opts) do
+      {local_storage, session_storage} = Session.storage_for_origin(session, origin)
+      restore_origin_storage(tab, local_storage, session_storage, opts)
+    end
+  end
+
+  def restore_session(%Tab{} = tab, session, opts) do
+    with {:ok, session} <- Session.normalize(session) do
+      restore_session(tab, session, opts)
+    end
+  end
+
+  @doc false
+  @spec session_snapshot(Tab.t(), keyword()) :: {:ok, Session.t()} | {:error, term()}
+  def session_snapshot(tab, opts \\ [])
+
+  def session_snapshot(%Tab{browser_context_id: nil}, _opts) do
+    {:error, :missing_browser_context}
+  end
+
+  def session_snapshot(%Tab{} = tab, opts) do
+    timeout = opts[:timeout] || @default_timeout
+
+    with {:ok, %{"cookies" => cookies}} <-
+           Connection.send_command(
+             tab.conn,
+             "Storage.getCookies",
+             %{"browserContextId" => tab.browser_context_id},
+             timeout
+           ),
+         {:ok, origin} <- current_origin(tab, opts),
+         {:ok, storage} <- evaluate(tab, storage_snapshot_script(), opts) do
+      {:ok,
+       Session.new(
+         cookies: cookies,
+         local_storage: %{origin => Map.get(storage, "localStorage", %{})},
+         session_storage: %{origin => Map.get(storage, "sessionStorage", %{})}
+       )}
+    end
+  end
+
+  @spec prepare_browser_context(pid(), keyword()) :: {:ok, binary() | nil} | {:error, term()}
+  defp prepare_browser_context(conn, opts) do
+    if Keyword.has_key?(opts, :session_key) do
+      create_session_browser_context(conn, opts[:session_snapshot])
+    else
+      {:ok, nil}
+    end
+  end
+
+  @spec create_session_browser_context(pid(), Session.t() | map() | nil) ::
+          {:ok, binary()} | {:error, term()}
+  defp create_session_browser_context(conn, session) do
+    with {:ok, %{"browserContextId" => browser_context_id}} <-
+           Connection.send_command(conn, "Target.createBrowserContext", %{}, 5_000) do
+      seed_browser_context(conn, browser_context_id, session)
+    end
+  end
+
+  @spec seed_browser_context(pid(), binary(), Session.t() | map() | nil) ::
+          {:ok, binary()} | {:error, term()}
+  defp seed_browser_context(conn, browser_context_id, session) do
+    case set_context_cookies(conn, browser_context_id, session) do
+      :ok ->
+        {:ok, browser_context_id}
+
+      {:error, _} = error ->
+        dispose_browser_context(conn, browser_context_id)
+        error
+    end
+  end
+
+  @spec set_context_cookies(pid(), binary(), Session.t() | map() | nil) :: :ok | {:error, term()}
+  defp set_context_cookies(_conn, _browser_context_id, nil), do: :ok
+
+  defp set_context_cookies(conn, browser_context_id, session) do
+    with {:ok, %Session{} = session} <- Session.normalize(session) do
+      set_context_cookie_params(conn, browser_context_id, session.cookies)
+    end
+  end
+
+  @spec set_context_cookie_params(pid(), binary(), [map()]) :: :ok | {:error, term()}
+  defp set_context_cookie_params(_conn, _browser_context_id, []), do: :ok
+
+  defp set_context_cookie_params(conn, browser_context_id, cookies) do
+    cookie_params = Enum.map(cookies, &cookie_param/1)
+
+    with {:ok, _} <-
+           Connection.send_command(
+             conn,
+             "Storage.setCookies",
+             %{"browserContextId" => browser_context_id, "cookies" => cookie_params},
+             5_000
+           ) do
+      :ok
+    end
+  end
+
+  @spec cookie_param(map()) :: map()
+  defp cookie_param(cookie) do
+    cookie
+    |> Map.take([
+      "name",
+      "value",
+      "url",
+      "domain",
+      "path",
+      "secure",
+      "httpOnly",
+      "expires"
+    ])
+    |> drop_session_expiry()
+  end
+
+  @spec drop_session_expiry(map()) :: map()
+  defp drop_session_expiry(%{"expires" => expires} = cookie) when expires < 0 do
+    Map.delete(cookie, "expires")
+  end
+
+  defp drop_session_expiry(cookie), do: cookie
+
+  @spec open_target(pid(), binary(), binary() | nil, keyword()) ::
+          {:ok, Tab.t()} | {:error, term()}
+  defp open_target(conn, target_url, browser_context_id, opts) do
+    with {:ok, %{"targetId" => target_id}} <-
+           Connection.send_command(
+             conn,
+             "Target.createTarget",
+             create_target_params(target_url, browser_context_id)
+           ),
+         {:ok, %{"sessionId" => session_id}} <-
+           Connection.send_command(conn, "Target.attachToTarget", %{
+             targetId: target_id,
+             flatten: true
+           }),
+         {:ok, _} <- cdp(conn, session_id, "Page.enable", %{}, 5_000),
+         {:ok, _} <- cdp(conn, session_id, "DOM.enable", %{}, 5_000),
+         {:ok, _} <- cdp(conn, session_id, "Runtime.enable", %{}, 5_000) do
+      {:ok, build_tab(conn, target_id, session_id, browser_context_id, opts)}
+    end
+  end
+
+  @spec create_target_params(binary(), binary() | nil) :: map()
+  defp create_target_params(target_url, browser_context_id) do
+    %{url: target_url}
+    |> maybe_put("browserContextId", browser_context_id)
+  end
+
+  @spec build_tab(pid(), binary(), binary(), binary() | nil, keyword()) :: Tab.t()
+  defp build_tab(conn, target_id, session_id, browser_context_id, opts) do
+    %Tab{
+      conn: conn,
+      driver: opts[:driver] || SpectreLens.Protocol.LightpandaCDP,
+      session_id: session_id,
+      target_id: target_id,
+      browser_context_id: browser_context_id,
+      session_key: opts[:session_key],
+      runtime: opts[:runtime],
+      instance_id: opts[:instance_id],
+      endpoint: opts[:endpoint]
+    }
+  end
+
+  @spec close_target(Tab.t()) :: :ok | {:error, term()}
+  defp close_target(%Tab{conn: conn, target_id: target_id}) do
+    if target_id do
+      case Connection.send_command(conn, "Target.closeTarget", %{targetId: target_id}, 5_000) do
+        {:ok, _} -> :ok
+        {:error, _} = error -> error
+      end
+    else
+      :ok
+    end
+  end
+
+  @spec dispose_browser_context(pid(), binary() | nil) :: :ok | {:error, term()}
+  defp dispose_browser_context(_conn, nil), do: :ok
+
+  defp dispose_browser_context(conn, browser_context_id) do
+    case Connection.send_command(
+           conn,
+           "Target.disposeBrowserContext",
+           %{"browserContextId" => browser_context_id},
+           5_000
+         ) do
+      {:ok, _} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
   @spec page_operation(Tab.t(), atom(), map(), (-> result)) :: result when result: term()
   defp page_operation(%Tab{} = tab, operation, metadata, fun)
        when is_atom(operation) and is_map(metadata) and is_function(fun, 0) do
@@ -391,7 +574,7 @@ defmodule SpectreLens.Page do
 
     Telemetry.span([:spectre_lens, :page, :operation], metadata, fn ->
       result = fun.()
-      {result, %{result: result}}
+      span_result(result)
     end)
   end
 
@@ -496,6 +679,104 @@ defmodule SpectreLens.Page do
   @spec ok_result({:ok, term()} | {:error, term()}) :: :ok | {:error, term()}
   defp ok_result({:ok, _}), do: :ok
   defp ok_result({:error, _} = error), do: error
+
+  @spec span_result(term()) :: term() | {term(), map()}
+  defp span_result(:ok), do: :ok
+  defp span_result(result), do: {result, %{result: result}}
+
+  @spec current_origin(Tab.t(), keyword()) :: {:ok, binary()} | {:error, term()}
+  defp current_origin(tab, opts) do
+    case evaluate(tab, "window.location.origin", opts) do
+      {:ok, origin} when is_binary(origin) and origin not in ["", "null"] ->
+        {:ok, origin}
+
+      {:ok, _} ->
+        with {:ok, url} <- url(tab) do
+          {:error, {:opaque_origin, url}}
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  @spec storage_snapshot_script() :: binary()
+  defp storage_snapshot_script do
+    """
+    (() => {
+      const copy = (storage) => {
+        const entries = {};
+        for (let index = 0; index < storage.length; index++) {
+          const key = storage.key(index);
+          entries[key] = storage.getItem(key);
+        }
+        return entries;
+      };
+
+      return {
+        localStorage: copy(window.localStorage),
+        sessionStorage: copy(window.sessionStorage)
+      };
+    })()
+    """
+  end
+
+  @spec restore_storage_script(map(), map()) :: binary()
+  defp restore_storage_script(local_storage, session_storage) do
+    """
+    (() => {
+      const localStorageValues = #{Jason.encode!(local_storage)};
+      const sessionStorageValues = #{Jason.encode!(session_storage)};
+
+      window.localStorage.clear();
+      for (const [key, value] of Object.entries(localStorageValues)) {
+        window.localStorage.setItem(key, value);
+      }
+
+      window.sessionStorage.clear();
+      for (const [key, value] of Object.entries(sessionStorageValues)) {
+        window.sessionStorage.setItem(key, value);
+      }
+
+      return true;
+    })()
+    """
+  end
+
+  @spec restore_origin_storage(Tab.t(), map(), map(), keyword()) :: :ok | {:error, term()}
+  defp restore_origin_storage(_tab, local_storage, session_storage, _opts)
+       when map_size(local_storage) == 0 and map_size(session_storage) == 0,
+       do: :ok
+
+  defp restore_origin_storage(tab, local_storage, session_storage, opts) do
+    with {:ok, _} <- evaluate(tab, restore_storage_script(local_storage, session_storage), opts) do
+      maybe_reload_after_session_restore(tab, local_storage, session_storage, opts)
+    end
+  end
+
+  @spec maybe_reload_after_session_restore(Tab.t(), map(), map(), keyword()) ::
+          :ok | {:error, term()}
+  defp maybe_reload_after_session_restore(tab, local_storage, session_storage, opts) do
+    if Keyword.get(opts, :reload_after_session_restore?, true) do
+      with :ok <- reload(tab, opts),
+           {:ok, _} <- evaluate(tab, restore_storage_script(local_storage, session_storage), opts) do
+        :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  @spec reload(Tab.t(), keyword()) :: :ok | {:error, term()}
+  defp reload(%Tab{conn: conn, session_id: sid}, opts) do
+    timeout = opts[:timeout] || @navigation_timeout
+    wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
+
+    with {:ok, _} <- Connection.send_command(conn, "Page.reload", %{}, timeout, sid),
+         {:ok, _} <- Connection.await_event(wait_ref, timeout) do
+      :ok
+    end
+  end
 
   @spec cdp(pid(), binary(), binary(), map(), non_neg_integer()) ::
           {:ok, map()} | {:error, term()}

@@ -16,4 +16,150 @@ defmodule SpectreLensIntegrationTest do
       SpectreLens.close(lens)
     end
   end
+
+  test "copies saved cookies and web storage into isolated session tabs" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    {:ok, server} = start_http_server("<html><body>session test</body></html>")
+    assert {:ok, lens} = SpectreLens.open(instances: 2, max_tabs_per_instance: 4)
+
+    url = "http://127.0.0.1:#{server.port}/"
+
+    try do
+      assert {:ok, tab} = SpectreLens.new_tab(lens, url: url, session: :login)
+      assert is_binary(tab.browser_context_id)
+      assert tab.session_key == :login
+
+      assert {:ok, _} =
+               SpectreLens.cdp(tab, "Runtime.evaluate", %{
+                 expression: """
+                 (() => {
+                   document.cookie = 'lens_cookie=one; path=/';
+                   window.localStorage.setItem('token', 'one');
+                   window.sessionStorage.setItem('nonce', 'one');
+                   return true;
+                 })()
+                 """,
+                 returnByValue: true,
+                 awaitPromise: true
+               })
+
+      assert {:ok, saved} = SpectreLens.save_session(tab)
+      assert Enum.any?(saved.cookies, &match?(%{"name" => "lens_cookie", "value" => "one"}, &1))
+      assert saved.local_storage[url_origin(url)] == %{"token" => "one"}
+      assert saved.session_storage[url_origin(url)] == %{"nonce" => "one"}
+
+      assert {:ok, second} = SpectreLens.new_tab(lens, url: url, session: :login)
+      assert second.instance_id != tab.instance_id
+
+      assert %{"cookie" => cookie, "local" => "one", "session" => "one"} =
+               browser_storage(second)
+
+      assert cookie =~ "lens_cookie=one"
+
+      assert {:ok, _} =
+               SpectreLens.cdp(second, "Runtime.evaluate", %{
+                 expression: "window.localStorage.setItem('token', 'two'); true",
+                 returnByValue: true,
+                 awaitPromise: true
+               })
+
+      assert {:ok, unchanged} = SpectreLens.get_session(lens, :login)
+      assert unchanged.local_storage[url_origin(url)] == %{"token" => "one"}
+
+      assert {:ok, updated} = SpectreLens.save_session(second)
+      assert updated.local_storage[url_origin(url)] == %{"token" => "two"}
+    after
+      SpectreLens.close(lens)
+      stop_http_server(server)
+    end
+  end
+
+  test "require_session? rejects unknown logical sessions before opening a tab" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 1, max_tabs_per_instance: 1)
+
+    try do
+      assert {:error, {:unknown_session, :missing}} =
+               SpectreLens.new_tab(lens, session: :missing, require_session?: true)
+    after
+      SpectreLens.close(lens)
+    end
+  end
+
+  defp browser_storage(tab) do
+    assert {:ok, %{"result" => %{"value" => storage}}} =
+             SpectreLens.cdp(tab, "Runtime.evaluate", %{
+               expression: """
+               ({
+                 cookie: document.cookie,
+                 local: window.localStorage.getItem('token'),
+                 session: window.sessionStorage.getItem('nonce')
+               })
+               """,
+               returnByValue: true,
+               awaitPromise: true
+             })
+
+    storage
+  end
+
+  defp url_origin(url) do
+    uri = URI.parse(url)
+    "#{uri.scheme}://#{uri.host}:#{uri.port}"
+  end
+
+  defp start_http_server(body) do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(socket)
+
+    pid =
+      spawn_link(fn ->
+        receive do
+          :go -> :ok
+        end
+
+        http_server_loop(socket, body)
+      end)
+
+    :ok = :gen_tcp.controlling_process(socket, pid)
+    send(pid, :go)
+    {:ok, %{pid: pid, port: port}}
+  end
+
+  defp stop_http_server(%{pid: pid}) do
+    if Process.alive?(pid) do
+      Process.unlink(pid)
+      Process.exit(pid, :shutdown)
+    end
+
+    :ok
+  end
+
+  defp http_server_loop(socket, body) do
+    case :gen_tcp.accept(socket) do
+      {:ok, client} ->
+        _ = :gen_tcp.recv(client, 0, 1_000)
+        response = http_response(body)
+        :ok = :gen_tcp.send(client, response)
+        :ok = :gen_tcp.close(client)
+        http_server_loop(socket, body)
+
+      {:error, :closed} ->
+        :ok
+
+      {:error, _reason} ->
+        http_server_loop(socket, body)
+    end
+  end
+
+  defp http_response(body) do
+    [
+      "HTTP/1.1 200 OK\r\n",
+      "content-type: text/html; charset=utf-8\r\n",
+      "content-length: #{byte_size(body)}\r\n",
+      "connection: close\r\n",
+      "\r\n",
+      body
+    ]
+  end
 end

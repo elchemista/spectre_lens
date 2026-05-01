@@ -7,7 +7,7 @@ defmodule SpectreLens do
   forms, links, structured data and action references.
   """
 
-  alias SpectreLens.{Context, LlmsTxt, PlugPipeline, Runtime, Tab, View, Watcher}
+  alias SpectreLens.{Context, LlmsTxt, PlugPipeline, Runtime, Session, Tab, View, Watcher}
 
   @default_include [:markdown, :interactive, :forms, :links]
 
@@ -25,6 +25,53 @@ defmodule SpectreLens do
   @spec new_tab(Runtime.t() | pid(), keyword()) :: {:ok, Tab.t()} | {:error, term()}
   def new_tab(runtime, opts \\ []) do
     SpectreLens.Errors.safe(:new_tab, fn -> Runtime.new_tab(runtime, opts) end)
+  end
+
+  @doc "Captures a tab's browser session into the runtime ETS session store."
+  @spec save_session(Tab.t(), term() | keyword() | nil, keyword()) ::
+          {:ok, Session.t()} | {:error, term()}
+  def save_session(tab, key \\ nil, opts \\ [])
+
+  def save_session(%Tab{} = tab, opts, []) when is_list(opts) do
+    SpectreLens.Errors.safe(:save_session, fn -> Runtime.save_session(tab, nil, opts) end)
+  end
+
+  def save_session(%Tab{} = tab, key, opts) do
+    SpectreLens.Errors.safe(:save_session, fn -> Runtime.save_session(tab, key, opts) end)
+  end
+
+  @doc "Returns a stored logical browser session."
+  @spec get_session(Runtime.t() | pid(), term()) :: {:ok, Session.t()} | {:error, term()}
+  def get_session(runtime, key) do
+    SpectreLens.Errors.safe(:get_session, fn -> Runtime.get_session(runtime, key) end)
+  end
+
+  @doc "Stores a logical browser session snapshot."
+  @spec put_session(Runtime.t() | pid(), term(), Session.t() | map() | keyword()) ::
+          {:ok, Session.t()} | {:error, term()}
+  def put_session(runtime, key, session) do
+    SpectreLens.Errors.safe(:put_session, fn -> Runtime.put_session(runtime, key, session) end)
+  end
+
+  @doc "Deletes a stored logical browser session."
+  @spec delete_session(Runtime.t() | pid(), term()) :: :ok | {:error, term()}
+  def delete_session(runtime, key) do
+    SpectreLens.Errors.safe(:delete_session, fn -> Runtime.delete_session(runtime, key) end)
+  end
+
+  @doc "Exports a stored logical browser session as a JSON-safe map."
+  @spec export_session(Runtime.t() | pid(), term()) :: {:ok, map()} | {:error, term()}
+  def export_session(runtime, key) do
+    SpectreLens.Errors.safe(:export_session, fn -> Runtime.export_session(runtime, key) end)
+  end
+
+  @doc "Imports a JSON-safe logical browser session snapshot."
+  @spec import_session(Runtime.t() | pid(), term(), map() | keyword()) ::
+          {:ok, Session.t()} | {:error, term()}
+  def import_session(runtime, key, session) do
+    SpectreLens.Errors.safe(:import_session, fn ->
+      Runtime.import_session(runtime, key, session)
+    end)
   end
 
   @doc "Closes a runtime and all Lightpanda instances it owns."

@@ -75,6 +75,41 @@ map.description
 :ok = SpectreLens.close(lens)
 ```
 
+## Browser Sessions
+
+Use logical sessions when login state should survive across tabs or process
+boundaries. Sessions are stored in the runtime's ETS table and copied into a
+fresh Lightpanda browser context when a tab is opened.
+
+```elixir
+{:ok, lens} = SpectreLens.open(instances: 2)
+{:ok, tab} = SpectreLens.new_tab(lens, url: "https://app.example/login", session: :work)
+
+# log in with normal actions...
+:ok = SpectreLens.act(tab, {:fill, ref: "#email", value: "agent@example.com"})
+:ok = SpectreLens.act(tab, {:click, ref: "button[type=submit]"})
+
+{:ok, session} = SpectreLens.save_session(tab)
+{:ok, saved_map} = SpectreLens.export_session(lens, :work)
+
+{:ok, _session} = SpectreLens.import_session(lens, :work, saved_map)
+{:ok, next_tab} = SpectreLens.new_tab(lens, url: "https://app.example/dashboard", session: :work)
+```
+
+Session snapshots include cookies, `localStorage`, and `sessionStorage` for
+visited origins. Tabs receive isolated copies: changes in one tab are not
+written back to ETS until `save_session/2` or `save_session/3` is called.
+
+Use `require_session?: true` when a missing named session should fail instead
+of starting with an empty snapshot:
+
+```elixir
+SpectreLens.new_tab(lens, session: :work, require_session?: true)
+```
+
+Local Lightpanda builds currently allow one live browser context per instance,
+so concurrent session tabs are balanced across runtime instances.
+
 ## Agent Views
 
 `SpectreLens.look/2` returns a `%SpectreLens.View{}`:

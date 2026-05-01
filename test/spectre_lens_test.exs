@@ -10,6 +10,7 @@ defmodule SpectreLensTest do
     PageMap,
     PlugPipeline,
     Region,
+    Session,
     Tab,
     Telemetry,
     View
@@ -191,6 +192,57 @@ defmodule SpectreLensTest do
 
       assert {:error, {RuntimeError, "plug failed"}} =
                PlugPipeline.run(context, builtin_plugs?: false, plugs: [RaisePlug])
+    end
+  end
+
+  describe "browser session snapshots" do
+    test "normalizes imported JSON-safe maps" do
+      assert {:ok, session} =
+               Session.normalize(%{
+                 "version" => 1,
+                 "cookies" => [%{"name" => "sid", "value" => "abc"}],
+                 "local_storage" => %{"https://example.com" => %{"token" => 123}},
+                 "session_storage" => %{"https://example.com" => %{"nonce" => :ok}},
+                 "metadata" => %{source: :test}
+               })
+
+      assert session.cookies == [%{"name" => "sid", "value" => "abc"}]
+      assert session.local_storage == %{"https://example.com" => %{"token" => "123"}}
+      assert session.session_storage == %{"https://example.com" => %{"nonce" => "ok"}}
+      assert session.metadata == %{"source" => "test"}
+      assert %{"version" => 1, "cookies" => [_]} = Session.to_map(session)
+    end
+
+    test "rejects unsupported snapshot versions" do
+      assert {:error, {:unsupported_session_version, 2}} =
+               Session.normalize(%{"version" => 2})
+    end
+
+    test "merges captured cookies and origin storage into an existing session" do
+      existing =
+        Session.new(
+          cookies: [%{"name" => "old", "value" => "1"}],
+          local_storage: %{"https://example.com" => %{"old" => "1"}},
+          session_storage: %{"https://example.com" => %{"nonce" => "old"}},
+          metadata: %{"source" => "old"}
+        )
+
+      captured =
+        Session.new(
+          cookies: [%{"name" => "new", "value" => "2"}],
+          local_storage: %{"https://example.com" => %{"token" => "2"}},
+          session_storage: %{"https://other.example" => %{"nonce" => "new"}},
+          metadata: %{"source" => "new"}
+        )
+
+      merged = Session.merge(existing, captured)
+
+      assert merged.cookies == [%{"name" => "new", "value" => "2"}]
+      assert merged.local_storage["https://example.com"] == %{"old" => "1", "token" => "2"}
+      assert merged.session_storage["https://example.com"] == %{"nonce" => "old"}
+      assert merged.session_storage["https://other.example"] == %{"nonce" => "new"}
+      assert merged.metadata == %{"source" => "new"}
+      assert merged.created_at == existing.created_at
     end
   end
 

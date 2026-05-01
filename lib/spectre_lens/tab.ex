@@ -14,8 +14,20 @@ defmodule SpectreLens.Tab do
           instance_id: term(),
           target_id: binary() | nil,
           session_id: binary(),
+          browser_context_id: binary() | nil,
+          session_key: term(),
           endpoint: binary() | nil
         }
 
-  defstruct [:conn, :driver, :runtime, :instance_id, :target_id, :session_id, :endpoint]
+  defstruct [
+    :conn,
+    :driver,
+    :runtime,
+    :instance_id,
+    :target_id,
+    :session_id,
+    :browser_context_id,
+    :session_key,
+    :endpoint
+  ]
 end
