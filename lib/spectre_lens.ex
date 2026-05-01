@@ -1,18 +1,219 @@
 defmodule SpectreLens do
   @moduledoc """
-  Documentation for `SpectreLens`.
+  Agent-first browser lens for Lightpanda.
+
+  Spectre Lens controls Lightpanda through CDP and returns compact page views
+  designed for agents: markdown, semantic structure, interactive elements,
+  forms, links, structured data and action references.
   """
+
+  alias SpectreLens.{Context, LlmsTxt, PlugPipeline, Runtime, Tab, View, Watcher}
+
+  @default_include [:markdown, :interactive, :forms, :links]
+
+  @doc "Starts a Spectre Lens runtime."
+  @spec open(keyword()) :: {:ok, Runtime.t()} | {:error, term()}
+  def open(opts \\ []) do
+    SpectreLens.Errors.safe(:open, fn ->
+      with {:ok, pid} <- Runtime.start_link(opts) do
+        {:ok, %Runtime{pid: pid}}
+      end
+    end)
+  end
+
+  @doc "Creates a new tab in a runtime."
+  @spec new_tab(Runtime.t() | pid(), keyword()) :: {:ok, Tab.t()} | {:error, term()}
+  def new_tab(runtime, opts \\ []) do
+    SpectreLens.Errors.safe(:new_tab, fn -> Runtime.new_tab(runtime, opts) end)
+  end
+
+  @doc "Closes a runtime and all Lightpanda instances it owns."
+  @spec close(Runtime.t() | pid()) :: :ok | {:error, term()}
+  def close(runtime), do: SpectreLens.Errors.safe(:close, fn -> Runtime.close(runtime) end)
 
   @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> SpectreLens.hello()
-      :world
-
+  Looks at the current page and returns an agent-readable `%SpectreLens.View{}`.
   """
-  def hello do
-    :world
+  @spec look(Tab.t(), keyword()) :: {:ok, View.t()} | {:error, term()}
+  def look(%Tab{} = tab, opts \\ []) do
+    SpectreLens.Errors.safe(:look, fn ->
+      include = opts[:include] || @default_include
+      context = %Context{tab: tab, include: List.wrap(include)}
+
+      with {:ok, %Context{} = context} <- PlugPipeline.run(context, opts) do
+        view =
+          context.view
+          |> Map.update!(:warnings, &Enum.reverse/1)
+          |> Map.update!(:errors, &Enum.reverse/1)
+
+        {:ok, view}
+      end
+    end)
+  end
+
+  @doc "Performs one browser action."
+  @spec act(Tab.t(), term(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
+  def act(tab, action, opts \\ [])
+
+  def act(tab, {:navigate, url}, opts) do
+    safe_action(fn -> SpectreLens.Protocol.navigate(tab, url, opts) end)
+  end
+
+  def act(tab, {:click, opts}, call_opts) when is_list(opts),
+    do: safe_action(fn -> SpectreLens.Protocol.click(tab, opts[:ref], call_opts) end)
+
+  def act(tab, {:click, ref}, opts),
+    do: safe_action(fn -> SpectreLens.Protocol.click(tab, ref, opts) end)
+
+  def act(tab, {:fill, opts}, call_opts) when is_list(opts),
+    do: safe_action(fn -> SpectreLens.Protocol.fill(tab, opts[:ref], opts[:value], call_opts) end)
+
+  def act(tab, {:submit, opts}, call_opts) when is_list(opts) do
+    safe_action(fn ->
+      SpectreLens.Protocol.submit(
+        tab,
+        opts[:ref] || opts[:form] || "form",
+        opts[:fields] || %{},
+        call_opts
+      )
+    end)
+  end
+
+  def act(tab, {:submit, ref}, opts),
+    do: safe_action(fn -> SpectreLens.Protocol.submit(tab, ref, %{}, opts) end)
+
+  def act(tab, {:scroll, opts}, call_opts) when is_list(opts),
+    do: safe_action(fn -> SpectreLens.Protocol.scroll(tab, Keyword.merge(call_opts, opts)) end)
+
+  def act(_tab, other, _opts), do: {:error, {:unknown_action, other}}
+
+  @doc "Exports page artifacts."
+  @spec export(Tab.t(), :screenshot | :html | :markdown | :pdf, keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def export(tab, type, opts \\ [])
+  def export(tab, :screenshot, opts), do: safe_export(:screenshot, tab, opts)
+  def export(tab, :html, opts), do: safe_export(:html, tab, opts)
+  def export(tab, :markdown, opts), do: safe_export(:markdown, tab, opts)
+  def export(tab, :pdf, opts), do: safe_export(:pdf, tab, opts)
+  def export(_tab, other, _opts), do: {:error, {:unknown_export, other}}
+
+  @doc """
+  Zooms out from the page and returns a human-readable composition map.
+
+  The returned `%SpectreLens.PageMap{}` describes the page in words for an
+  agent: navigation, hero/intro, sidebars, content sections, galleries, forms,
+  footer, and their approximate positions when available.
+  """
+  @spec zoom_out(Tab.t(), keyword()) :: {:ok, SpectreLens.PageMap.t()} | {:error, term()}
+  def zoom_out(%Tab{} = tab, opts \\ []) do
+    SpectreLens.Errors.safe(:zoom_out, fn -> SpectreLens.Protocol.page_map(tab, opts) end)
+  end
+
+  @doc "Alias for `zoom_out/2`, useful when an agent wants to step back from a focused element."
+  @spec unfocus(Tab.t(), keyword()) :: {:ok, SpectreLens.PageMap.t()} | {:error, term()}
+  def unfocus(%Tab{} = tab, opts \\ []), do: zoom_out(tab, opts)
+
+  @doc "Zooms into one selector, action ref, or region and describes that local area."
+  @spec zoom_in(Tab.t(), term(), keyword()) :: {:ok, SpectreLens.PageMap.t()} | {:error, term()}
+  def zoom_in(%Tab{} = tab, ref, opts \\ []) do
+    SpectreLens.Errors.safe(:zoom_in, fn -> SpectreLens.Protocol.focus(tab, ref, opts) end)
+  end
+
+  @doc "Starts a lightweight polling watcher for a tab."
+  @spec watch(Tab.t(), keyword()) :: {:ok, Watcher.t()} | {:error, term()}
+  def watch(%Tab{} = tab, opts \\ []) do
+    SpectreLens.Errors.safe(:watch, fn -> Watcher.start(tab, opts) end)
+  end
+
+  @doc "Stops a watcher."
+  @spec stop_watch(Watcher.t()) :: :ok | {:error, term()}
+  def stop_watch(%Watcher{} = watcher) do
+    SpectreLens.Errors.safe(:stop_watch, fn -> Watcher.stop(watcher) end)
+  end
+
+  @doc "Sends a raw CDP command to a tab."
+  @spec cdp(Tab.t(), binary(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def cdp(%Tab{} = tab, method, params \\ %{}, opts \\ []) do
+    SpectreLens.Errors.safe(:cdp, fn ->
+      SpectreLens.Protocol.command(tab, method, params, opts)
+    end)
+  end
+
+  @doc "Returns runtime diagnostics for the Lightpanda binary."
+  @spec doctor(keyword()) :: map() | {:error, term()}
+  def doctor(opts \\ []) do
+    SpectreLens.Errors.safe(:doctor, fn -> SpectreLens.Lightpanda.doctor(opts) end)
+  end
+
+  @doc """
+  Discovers and parses a site's `llms.txt` agent context file.
+
+  Pass either a site URL, a direct `/llms.txt` URL, a direct `/llms-full.txt`
+  URL, or a `%SpectreLens.Tab{}`. Use `full?: true` to also fetch the full
+  context file when the site exposes one.
+  """
+  @spec llms(binary() | Tab.t(), keyword()) :: {:ok, LlmsTxt.t()} | {:error, term()}
+  def llms(url_or_tab, opts \\ [])
+
+  def llms(%Tab{} = tab, opts) do
+    SpectreLens.Errors.safe(:llms, fn ->
+      with {:ok, url} <- SpectreLens.Protocol.url(tab) do
+        LlmsTxt.discover(url, opts)
+      end
+    end)
+  end
+
+  def llms(url, opts) when is_binary(url) do
+    SpectreLens.Errors.safe(:llms, fn -> LlmsTxt.discover(url, opts) end)
+  end
+
+  @doc """
+  Returns Markdown context from a site's `llms.txt` / full context file.
+
+  Options are forwarded to `llms/2`. Set `prefer: :index | :full | :both` to
+  choose which Markdown document is returned. The default is `:full`.
+  """
+  @spec llms_context(binary() | Tab.t(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def llms_context(url_or_tab, opts \\ []) do
+    SpectreLens.Errors.safe(:llms_context, fn ->
+      with {:ok, doc} <- llms(url_or_tab, Keyword.put_new(opts, :full?, true)) do
+        LlmsTxt.to_context(doc, opts)
+      end
+    end)
+  end
+
+  @doc "Converts an error into an agent-readable packet with retry guidance."
+  @spec explain_error(term()) :: SpectreLens.Errors.agent_error()
+  def explain_error(reason), do: SpectreLens.Errors.to_agent(reason)
+
+  @doc "Returns the package version."
+  @spec version() :: binary()
+  def version do
+    :spectre_lens
+    |> Application.spec(:vsn)
+    |> to_string()
+  end
+
+  @spec safe_action((-> result)) :: result | {:error, term()} when result: term()
+  defp safe_action(fun) do
+    SpectreLens.Errors.safe(:act, fun)
+  end
+
+  @spec safe_export(:screenshot | :html | :markdown | :pdf, Tab.t(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  defp safe_export(:screenshot, tab, opts) do
+    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.screenshot(tab, opts) end)
+  end
+
+  defp safe_export(:html, tab, opts) do
+    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.html(tab, opts) end)
+  end
+
+  defp safe_export(:markdown, tab, opts) do
+    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.markdown(tab, opts) end)
+  end
+
+  defp safe_export(:pdf, tab, opts) do
+    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.pdf(tab, opts) end)
   end
 end
