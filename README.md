@@ -197,6 +197,12 @@ view.semantic_tree
 view.semantic_text
 ```
 
+`links` and `interactive` are intentionally separate:
+
+- `links` contains navigation targets deduped by `href`.
+- `interactive` contains non-link controls such as buttons, inputs, selects,
+  textareas, forms, ARIA buttons, and other pressable/focusable controls.
+
 Exports return binaries by default. Pass `:path` or `:to` to save the artifact
 and receive the saved path instead:
 
@@ -293,6 +299,26 @@ generated in `view.actions`.
 :ok = SpectreLens.act(tab, {:fill, ref: "#email", value: "agent@example.com"})
 :ok = SpectreLens.act(tab, {:submit, ref: "#login-form", fields: %{"#password" => "secret"}})
 :ok = SpectreLens.act(tab, {:scroll, by: 800})
+```
+
+To follow a link, use the link map from `view.links` directly. The map is the
+ref:
+
+```elixir
+{:ok, view} = SpectreLens.look(tab, include: [:links])
+link = Enum.find(view.links, &(&1["text"] =~ "Latest articles"))
+
+:ok = SpectreLens.act(tab, {:navigate, link})
+:ok = SpectreLens.act(tab, {:click, ref: link})
+```
+
+Use `:navigate` when you want to move to the link URL. Use `:click` when you
+want the page element's click behavior, such as hash scrolling, JavaScript
+handlers, or UI state changes. Direct navigation is simplest when you already
+know the URL:
+
+```elixir
+:ok = SpectreLens.act(tab, {:navigate, "https://elchemista.com/en/post/example"})
 ```
 
 Raw protocol commands are still available:

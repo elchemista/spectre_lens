@@ -113,8 +113,12 @@ defmodule SpectreLens do
   @spec act(Tab.t(), term(), keyword()) :: :ok | {:ok, term()} | {:error, term()}
   def act(tab, action, opts \\ [])
 
-  def act(tab, {:navigate, url}, opts) do
-    safe_action(fn -> SpectreLens.Protocol.navigate(tab, url, opts) end)
+  def act(tab, {:navigate, ref}, opts) do
+    safe_action(fn ->
+      with {:ok, url} <- navigation_url(ref) do
+        SpectreLens.Protocol.navigate(tab, url, opts)
+      end
+    end)
   end
 
   def act(tab, {:click, opts}, call_opts) when is_list(opts),
@@ -256,6 +260,17 @@ defmodule SpectreLens do
   defp safe_action(fun) do
     SpectreLens.Errors.safe(:act, fun)
   end
+
+  @spec navigation_url(term()) :: {:ok, binary()} | {:error, term()}
+  defp navigation_url(url) when is_binary(url), do: {:ok, url}
+
+  defp navigation_url(%SpectreLens.ActionRef{kind: :link, href: url})
+       when is_binary(url),
+       do: {:ok, url}
+
+  defp navigation_url(%{"href" => href}) when is_binary(href), do: {:ok, href}
+  defp navigation_url(%{href: href}) when is_binary(href), do: {:ok, href}
+  defp navigation_url(other), do: {:error, {:missing_navigation_url, other}}
 
   @spec safe_export(:screenshot | :html | :markdown | :pdf, Tab.t(), keyword()) ::
           {:ok, binary()} | {:ok, Path.t()} | {:error, term()}

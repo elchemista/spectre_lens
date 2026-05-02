@@ -10,9 +10,10 @@ defmodule SpectreLens.ActionRef do
           selector: binary() | nil,
           xpath: binary() | nil,
           node_id: integer() | nil,
+          href: binary() | nil,
           role: binary() | nil,
           name: binary() | nil
         }
 
-  defstruct [:id, :kind, :label, :selector, :xpath, :node_id, :role, :name]
+  defstruct [:id, :kind, :label, :selector, :xpath, :node_id, :href, :role, :name]
 end

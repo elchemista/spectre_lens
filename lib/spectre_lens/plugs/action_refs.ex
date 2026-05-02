@@ -46,6 +46,7 @@ defmodule SpectreLens.Plugs.ActionRefs do
         selector: selector_for(element),
         xpath: get(element, "xpath"),
         node_id: get(element, "nodeId") || get(element, "backendDOMNodeId"),
+        href: get(element, "href"),
         role: role,
         name: name
       }
@@ -93,6 +94,7 @@ defmodule SpectreLens.Plugs.ActionRefs do
         kind: :link,
         label: get(link, "text") || get(link, "href"),
         selector: selector_for(link),
+        href: get(link, "href"),
         name: get(link, "text")
       }
     end)

@@ -45,6 +45,35 @@ defmodule SpectreLensIntegrationTest do
     end
   end
 
+  test "clicks a link map returned by look" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 1)
+
+    try do
+      assert {:ok, tab} = SpectreLens.new_tab(lens, url: "https://elchemista.com")
+      assert {:ok, view} = SpectreLens.look(tab, include: [:links, :interactive])
+      link = Enum.find(view.links, &(&1["href"] =~ "#latest-articles"))
+
+      refute Enum.any?(view.interactive, &Map.has_key?(&1, "href"))
+      assert :ok = SpectreLens.act(tab, {:click, ref: link})
+
+      assert {:ok, %{"result" => %{"value" => url}}} =
+               SpectreLens.cdp(tab, "Runtime.evaluate", %{
+                 expression: "window.location.href",
+                 returnByValue: true
+               })
+
+      assert url =~ "#latest-articles"
+
+      post =
+        Enum.find(view.links, &(&1["href"] =~ "/coding-with-ai-agents-without-losing-your-mind"))
+
+      assert :ok = SpectreLens.act(tab, {:navigate, post})
+    after
+      SpectreLens.close(lens)
+    end
+  end
+
   test "copies saved cookies and web storage into isolated session tabs" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
     {:ok, server} = start_http_server("<html><body>session test</body></html>")

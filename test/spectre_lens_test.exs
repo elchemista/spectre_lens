@@ -365,6 +365,61 @@ defmodule SpectreLensTest do
       assert action.node_id == 42
     end
 
+    test "skips links in interactive plug output" do
+      context = %Context{
+        include: [:interactive],
+        view: %View{},
+        tab: %Tab{driver: FakeProtocol}
+      }
+
+      defmodule LinkyProtocol do
+        @behaviour SpectreLens.Protocol
+
+        def new_tab(_instance, _opts), do: {:error, :unused}
+        def close_tab(_tab), do: :ok
+        def command(_tab, _method, _params, _opts), do: {:ok, %{}}
+        def navigate(_tab, _url, _opts), do: :ok
+        def evaluate(_tab, _expression, _opts), do: {:ok, nil}
+        def url(_tab), do: {:ok, "https://fake.local/"}
+        def title(_tab), do: {:ok, "Fake"}
+        def html(_tab, _opts), do: {:ok, ""}
+        def markdown(_tab, _opts), do: {:ok, ""}
+        def semantic_tree(_tab, _opts), do: {:ok, %{}}
+
+        def interactive_elements(_tab, _opts) do
+          {:ok,
+           [
+             %{
+               "tagName" => "a",
+               "role" => "link",
+               "href" => "https://example.com",
+               "name" => "Link"
+             },
+             %{"tagName" => "button", "role" => "button", "name" => "Go"}
+           ]}
+        end
+
+        def structured_data(_tab, _opts), do: {:ok, %{}}
+        def page_map(_tab, _opts), do: {:ok, %PageMap{}}
+        def focus(_tab, _ref, _opts), do: {:ok, %PageMap{}}
+        def links(_tab, _opts), do: {:ok, []}
+        def forms(_tab, _opts), do: {:ok, []}
+        def screenshot(_tab, _opts), do: {:ok, ""}
+        def pdf(_tab, _opts), do: {:ok, ""}
+        def click(_tab, _ref, _opts), do: :ok
+        def fill(_tab, _ref, _value, _opts), do: :ok
+        def submit(_tab, _ref, _fields, _opts), do: :ok
+        def wait_for_selector(_tab, _selector, _opts), do: :ok
+        def wait_for_navigation(_tab, fun, _opts), do: fun.()
+        def scroll(_tab, _opts), do: :ok
+      end
+
+      context = %{context | tab: %Tab{driver: LinkyProtocol}}
+
+      assert %{view: %View{interactive: [%{"name" => "Go"}]}} =
+               Plugs.Interactive.call(context, [])
+    end
+
     test "builds form and field actions" do
       actions =
         Plugs.ActionRefs.build_from_forms([
@@ -390,6 +445,7 @@ defmodule SpectreLensTest do
 
       assert action.kind == :link
       assert action.label == "Example"
+      assert action.href == "https://example.com"
     end
   end
 

@@ -790,11 +790,21 @@ defmodule SpectreLens.Page do
   defp node_id(tab, %SpectreLens.ActionRef{node_id: id}, timeout) when is_integer(id),
     do: node_id(tab, id, timeout)
 
-  defp node_id(tab, %SpectreLens.ActionRef{selector: selector}, timeout),
+  defp node_id(tab, %SpectreLens.ActionRef{selector: selector}, timeout) when is_binary(selector),
     do: node_id(tab, selector, timeout)
 
-  defp node_id(tab, %{"nodeId" => id}, timeout), do: node_id(tab, id, timeout)
-  defp node_id(tab, %{"selector" => selector}, timeout), do: node_id(tab, selector, timeout)
+  defp node_id(tab, %SpectreLens.ActionRef{kind: :link, href: href}, timeout)
+       when is_binary(href),
+       do: link_node_id(tab, href, timeout)
+
+  defp node_id(tab, %{"nodeId" => id}, timeout) when is_integer(id), do: node_id(tab, id, timeout)
+  defp node_id(tab, %{"backendNodeId" => id}, timeout), do: backend_node_id(tab, id, timeout)
+  defp node_id(tab, %{"backendDOMNodeId" => id}, timeout), do: backend_node_id(tab, id, timeout)
+
+  defp node_id(tab, %{"selector" => selector}, timeout) when is_binary(selector),
+    do: node_id(tab, selector, timeout)
+
+  defp node_id(tab, %{"href" => href}, timeout), do: link_node_id(tab, href, timeout)
 
   defp node_id(%Tab{} = tab, selector, timeout) when is_binary(selector) do
     with {:ok, %{"root" => %{"nodeId" => root_id}}} <-
@@ -814,6 +824,57 @@ defmodule SpectreLens.Page do
   end
 
   defp node_id(_tab, other, _timeout), do: {:error, SpectreLens.ElementNotFoundError.new(other)}
+
+  @spec backend_node_id(Tab.t(), term(), non_neg_integer()) :: {:ok, integer()} | {:error, term()}
+  defp backend_node_id(%Tab{} = tab, backend_node_id, timeout) when is_integer(backend_node_id) do
+    case command(
+           tab,
+           "DOM.pushNodesByBackendIdsToFrontend",
+           %{"backendNodeIds" => [backend_node_id]},
+           timeout: timeout
+         ) do
+      {:ok, %{"nodeIds" => [node_id | _]}} when is_integer(node_id) ->
+        {:ok, node_id}
+
+      {:ok, _} ->
+        {:error, SpectreLens.ElementNotFoundError.new(%{"backendNodeId" => backend_node_id})}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp backend_node_id(_tab, other, _timeout),
+    do: {:error, SpectreLens.ElementNotFoundError.new(%{"backendNodeId" => other})}
+
+  @spec link_node_id(Tab.t(), term(), non_neg_integer()) :: {:ok, integer()} | {:error, term()}
+  defp link_node_id(%Tab{} = tab, href, timeout) when is_binary(href) do
+    script = """
+    (() => {
+      const href = #{Jason.encode!(href)};
+      const links = Array.from(document.querySelectorAll('a[href]'));
+      const el = links.find((a) => a.href === href || a.getAttribute('href') === href);
+      if (!el) return null;
+
+      let token = el.getAttribute('data-spectre-lens-ref');
+      if (!token) {
+        token = `link-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        el.setAttribute('data-spectre-lens-ref', token);
+      }
+
+      return `[data-spectre-lens-ref="${CSS.escape(token)}"]`;
+    })()
+    """
+
+    case evaluate(tab, script, timeout: timeout) do
+      {:ok, selector} when is_binary(selector) -> node_id(tab, selector, timeout)
+      {:ok, _} -> {:error, SpectreLens.ElementNotFoundError.new(%{"href" => href})}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp link_node_id(_tab, other, _timeout),
+    do: {:error, SpectreLens.ElementNotFoundError.new(%{"href" => other})}
 
   @spec click_point(Tab.t(), integer(), non_neg_integer()) ::
           {:ok, {number(), number()}} | {:error, term()}
