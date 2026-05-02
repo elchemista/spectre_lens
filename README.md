@@ -339,32 +339,39 @@ temporary runtime:
 
 ## Actions
 
-Actions accept selectors, node ids, maps, and `%SpectreLens.ActionRef{}` values
-generated in `view.actions`.
+Actions accept selectors, node ids, maps, `%SpectreLens.ActionRef{}` values,
+and agent-friendly text queries. Text queries use normalized partial matching
+and string distance, so close labels can still resolve when an agent is slightly
+off.
 
 ```elixir
 :ok = SpectreLens.act(tab, {:navigate, "https://example.com"})
 :ok = SpectreLens.act(tab, {:click, ref: "#login"})
+:ok = SpectreLens.act(tab, {:navigate, text: "Latest articles"})
+:ok = SpectreLens.act(tab, {:click, text: "Book a Call"})
 :ok = SpectreLens.act(tab, {:fill, ref: "#email", value: "agent@example.com"})
 :ok = SpectreLens.act(tab, {:submit, ref: "#login-form", fields: %{"#password" => "secret"}})
 :ok = SpectreLens.act(tab, {:scroll, by: 800})
 ```
 
-To follow a link, use the link map from `view.links` directly. The map is the
-ref:
+For links, prefer a text query when an agent only knows the visible label:
 
 ```elixir
-{:ok, view} = SpectreLens.look(tab, include: [:links])
-link = Enum.find(view.links, &(&1["text"] =~ "Latest articles"))
-
-:ok = SpectreLens.act(tab, {:navigate, link})
-:ok = SpectreLens.act(tab, {:click, ref: link})
+:ok = SpectreLens.act(tab, {:navigate, text: "Latest articles"})
+:ok = SpectreLens.act(tab, {:click, text: "Latest articles"})
 ```
 
 Use `:navigate` when you want to move to the link URL. Use `:click` when you
 want the page element's click behavior, such as hash scrolling, JavaScript
-handlers, or UI state changes. Direct navigation is simplest when you already
-know the URL:
+handlers, or UI state changes. If you already have a link map from `view.links`,
+that map is still a valid ref:
+
+```elixir
+:ok = SpectreLens.act(tab, {:navigate, link})
+:ok = SpectreLens.act(tab, {:click, ref: link})
+```
+
+Direct navigation is simplest when you already know the URL:
 
 ```elixir
 :ok = SpectreLens.act(tab, {:navigate, "https://elchemista.com/en/post/example"})

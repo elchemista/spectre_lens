@@ -52,7 +52,9 @@ defmodule SpectreLensTest do
     def new_tab(_instance, _opts), do: {:error, :unused}
     def close_tab(_tab), do: :ok
     def command(_tab, method, params, _opts), do: {:ok, %{method: method, params: params}}
+
     def navigate(_tab, _url, _opts), do: :ok
+
     def evaluate(_tab, _expression, _opts), do: {:ok, nil}
     def url(_tab), do: {:ok, "https://fake.local/"}
     def title(_tab), do: {:ok, "Fake"}
@@ -93,7 +95,9 @@ defmodule SpectreLensTest do
     def forms(_tab, _opts), do: {:ok, []}
     def screenshot(_tab, _opts), do: {:ok, "png"}
     def pdf(_tab, _opts), do: {:ok, "pdf"}
+
     def click(_tab, _ref, _opts), do: :ok
+
     def fill(_tab, _ref, _value, _opts), do: :ok
     def submit(_tab, _ref, _fields, _opts), do: :ok
     def wait_for_selector(_tab, _selector, _opts), do: :ok
@@ -107,6 +111,7 @@ defmodule SpectreLensTest do
     def new_tab(_instance, _opts), do: {:error, :unused}
     def close_tab(_tab), do: :ok
     def command(_tab, _method, _params, _opts), do: {:ok, %{}}
+
     def navigate(_tab, _url, _opts), do: :ok
 
     def evaluate(_tab, _expression, _opts) do
@@ -126,7 +131,9 @@ defmodule SpectreLensTest do
     def forms(_tab, _opts), do: {:ok, []}
     def screenshot(_tab, _opts), do: {:ok, "png"}
     def pdf(_tab, _opts), do: {:ok, "pdf"}
+
     def click(_tab, _ref, _opts), do: :ok
+
     def fill(_tab, _ref, _value, _opts), do: :ok
     def submit(_tab, _ref, _fields, _opts), do: :ok
     def wait_for_selector(_tab, _selector, _opts), do: :ok
@@ -140,7 +147,12 @@ defmodule SpectreLensTest do
     def new_tab(_instance, _opts), do: {:error, :unused}
     def close_tab(_tab), do: :ok
     def command(_tab, _method, _params, _opts), do: {:ok, %{}}
-    def navigate(_tab, _url, _opts), do: :ok
+
+    def navigate(_tab, url, _opts) do
+      if parent = Process.get(:action_parent), do: send(parent, {:navigate, url})
+      :ok
+    end
+
     def evaluate(_tab, _expression, _opts), do: {:ok, nil}
     def url(_tab), do: {:ok, "https://shape.local/"}
     def title(_tab), do: {:ok, "Shape"}
@@ -155,7 +167,12 @@ defmodule SpectreLensTest do
     def forms(_tab, _opts), do: {:ok, []}
     def screenshot(_tab, _opts), do: {:ok, ""}
     def pdf(_tab, _opts), do: {:ok, ""}
-    def click(_tab, _ref, _opts), do: :ok
+
+    def click(_tab, ref, _opts) do
+      if parent = Process.get(:action_parent), do: send(parent, {:click, ref})
+      :ok
+    end
+
     def fill(_tab, _ref, _value, _opts), do: :ok
     def submit(_tab, _ref, _fields, _opts), do: :ok
     def wait_for_selector(_tab, _selector, _opts), do: :ok
@@ -516,6 +533,98 @@ defmodule SpectreLensTest do
       assert action.kind == :link
       assert action.label == "Example"
       assert action.href == "https://example.com"
+    end
+  end
+
+  describe "agentic actions" do
+    setup do
+      Process.put(:action_parent, self())
+
+      on_exit(fn ->
+        Process.delete(:action_parent)
+        Process.delete(:interactive_elements)
+        Process.delete(:links)
+      end)
+
+      :ok
+    end
+
+    test "navigate finds a link by similar text" do
+      Process.put(:links, [
+        %{"href" => "https://example.com/latest", "text" => "Latest articles"},
+        %{"href" => "https://example.com/contact", "text" => "Contact"}
+      ])
+
+      tab = %Tab{driver: ViewShapeProtocol}
+
+      assert :ok = SpectreLens.act(tab, {:navigate, text: "latest article"})
+      assert_receive {:navigate, "https://example.com/latest"}
+    end
+
+    test "navigate tolerates typo-like text with string distance" do
+      Process.put(:links, [
+        %{"href" => "https://example.com/latest", "text" => "Latest articles"},
+        %{"href" => "https://example.com/contact", "text" => "Contact"}
+      ])
+
+      tab = %Tab{driver: ViewShapeProtocol}
+
+      assert :ok = SpectreLens.act(tab, {:navigate, text: "latst articls"})
+      assert_receive {:navigate, "https://example.com/latest"}
+    end
+
+    test "click finds a non-link control by name" do
+      Process.put(:interactive_elements, [
+        %{"tagName" => "button", "role" => "button", "name" => "Open menu"},
+        %{"tagName" => "button", "role" => "button", "name" => "Subscribe"}
+      ])
+
+      tab = %Tab{driver: ViewShapeProtocol}
+
+      assert :ok = SpectreLens.act(tab, {:click, name: "open"})
+      assert_receive {:click, %{"name" => "Open menu"}}
+    end
+
+    test "click falls back to links by text" do
+      Process.put(:interactive_elements, [])
+      Process.put(:links, [%{"href" => "https://example.com/pricing", "text" => "Pricing"}])
+
+      tab = %Tab{driver: ViewShapeProtocol}
+
+      assert :ok = SpectreLens.act(tab, {:click, text: "price"})
+      assert_receive {:click, %{"href" => "https://example.com/pricing"}}
+    end
+
+    test "click ignores link-shaped interactive elements and uses link refs" do
+      Process.put(:interactive_elements, [
+        %{
+          "backendNodeId" => 123,
+          "href" => "https://example.com/latest",
+          "name" => "Latest articles"
+        }
+      ])
+
+      Process.put(:links, [
+        %{"href" => "https://example.com/latest", "text" => "Latest articles"}
+      ])
+
+      tab = %Tab{driver: ViewShapeProtocol}
+
+      assert :ok = SpectreLens.act(tab, {:click, text: "latest"})
+      assert_receive {:click, %{"href" => "https://example.com/latest"}}
+    end
+
+    test "text actions return element errors when no target matches" do
+      Process.put(:interactive_elements, [%{"tagName" => "button", "name" => "Subscribe"}])
+      Process.put(:links, [%{"href" => "https://example.com/blog", "text" => "Blog"}])
+
+      tab = %Tab{driver: ViewShapeProtocol}
+
+      assert {:error, %SpectreLens.ElementNotFoundError{}} =
+               SpectreLens.act(tab, {:click, text: "settings"})
+
+      assert {:error, %SpectreLens.ElementNotFoundError{}} =
+               SpectreLens.act(tab, {:navigate, text: "settings"})
     end
   end
 
