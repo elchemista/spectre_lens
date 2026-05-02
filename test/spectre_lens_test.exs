@@ -7,6 +7,7 @@ defmodule SpectreLensTest do
     Context,
     Lightpanda,
     LlmsTxt,
+    Outline,
     PageMap,
     PlugPipeline,
     Region,
@@ -68,7 +69,12 @@ defmodule SpectreLensTest do
            "Zoomed out, the page has a navigation bar, a hero, a gallery, and a contact form.",
          regions: [
            %Region{purpose: :navigation, position: "top of the page"},
-           %Region{purpose: :hero, label: "Welcome", position: "top of the page"},
+           %Region{
+             purpose: :hero,
+             label: "Welcome",
+             position: "top of the page",
+             selector: "#hero"
+           },
            %Region{purpose: :gallery, position: "middle of the page"},
            %Region{purpose: :contact_form, position: "bottom of the page"}
          ]
@@ -120,6 +126,35 @@ defmodule SpectreLensTest do
     def forms(_tab, _opts), do: {:ok, []}
     def screenshot(_tab, _opts), do: {:ok, "png"}
     def pdf(_tab, _opts), do: {:ok, "pdf"}
+    def click(_tab, _ref, _opts), do: :ok
+    def fill(_tab, _ref, _value, _opts), do: :ok
+    def submit(_tab, _ref, _fields, _opts), do: :ok
+    def wait_for_selector(_tab, _selector, _opts), do: :ok
+    def wait_for_navigation(_tab, fun, _opts), do: fun.()
+    def scroll(_tab, _opts), do: :ok
+  end
+
+  defmodule ViewShapeProtocol do
+    @behaviour SpectreLens.Protocol
+
+    def new_tab(_instance, _opts), do: {:error, :unused}
+    def close_tab(_tab), do: :ok
+    def command(_tab, _method, _params, _opts), do: {:ok, %{}}
+    def navigate(_tab, _url, _opts), do: :ok
+    def evaluate(_tab, _expression, _opts), do: {:ok, nil}
+    def url(_tab), do: {:ok, "https://shape.local/"}
+    def title(_tab), do: {:ok, "Shape"}
+    def html(_tab, _opts), do: {:ok, ""}
+    def markdown(_tab, _opts), do: {:ok, ""}
+    def semantic_tree(_tab, _opts), do: {:ok, %{}}
+    def interactive_elements(_tab, _opts), do: {:ok, Process.get(:interactive_elements, [])}
+    def structured_data(_tab, _opts), do: {:ok, %{}}
+    def page_map(_tab, _opts), do: {:ok, %PageMap{}}
+    def focus(_tab, _ref, _opts), do: {:ok, %PageMap{}}
+    def links(_tab, _opts), do: {:ok, Process.get(:links, [])}
+    def forms(_tab, _opts), do: {:ok, []}
+    def screenshot(_tab, _opts), do: {:ok, ""}
+    def pdf(_tab, _opts), do: {:ok, ""}
     def click(_tab, _ref, _opts), do: :ok
     def fill(_tab, _ref, _value, _opts), do: :ok
     def submit(_tab, _ref, _fields, _opts), do: :ok
@@ -343,6 +378,50 @@ defmodule SpectreLensTest do
       assert focused.description =~ "#contact"
       assert [%Region{purpose: :contact_form}] = focused.regions
     end
+
+    test "outline returns compact and detailed section outlines" do
+      tab = %Tab{driver: FakeProtocol}
+
+      assert {:ok, %Outline{} = outline} = SpectreLens.outline(tab)
+      assert outline.text =~ "[Navigation]"
+      assert outline.text =~ "[Hero / Welcome]"
+
+      assert Enum.map(outline.sections, & &1.purpose) == [
+               :navigation,
+               :hero,
+               :gallery,
+               :contact_form
+             ]
+
+      assert {:ok, detailed} = SpectreLens.outline(tab, [:detailed])
+      assert detailed.detailed?
+      assert detailed.text =~ "[ Hero / Welcome ]"
+      assert detailed.text =~ "[end Hero / Welcome]"
+    end
+
+    test "outline handles empty and unlabeled generic sections" do
+      assert %Outline{text: "", sections: []} = Outline.from_regions([], [])
+
+      regions = [
+        %Region{purpose: :content_section, text: "boilerplate"},
+        %Region{purpose: :form, label: "Subscribe", selector: "#subscribe"}
+      ]
+
+      assert %Outline{text: "[Form / Subscribe]", sections: [%Outline.Section{} = section]} =
+               Outline.from_regions(regions, [])
+
+      assert section.selector == "#subscribe"
+    end
+
+    test "zoom_in accepts an outline section" do
+      tab = %Tab{driver: FakeProtocol}
+
+      assert {:ok, outline} = SpectreLens.outline(tab)
+      section = Enum.find(outline.sections, &(&1.purpose == :hero))
+
+      assert {:ok, focused} = SpectreLens.zoom_in(tab, section)
+      assert focused.description =~ section.selector
+    end
   end
 
   describe "built-in action refs" do
@@ -366,58 +445,49 @@ defmodule SpectreLensTest do
     end
 
     test "skips links in interactive plug output" do
+      Process.put(:interactive_elements, [
+        %{"tagName" => "a", "role" => "link", "href" => "https://example.com", "name" => "Link"},
+        %{tagName: "a", role: "link", href: "https://example.com/atom", name: "Atom Link"},
+        %{"tagName" => "button", "role" => "button", "name" => "Go"},
+        %{tagName: "div", role: "button", name: "Open"}
+      ])
+
       context = %Context{
         include: [:interactive],
         view: %View{},
-        tab: %Tab{driver: FakeProtocol}
+        tab: %Tab{driver: ViewShapeProtocol}
       }
 
-      defmodule LinkyProtocol do
-        @behaviour SpectreLens.Protocol
+      assert %{view: %View{interactive: interactive}} = Plugs.Interactive.call(context, [])
+      assert Enum.map(interactive, &(&1["name"] || &1[:name])) == ["Go", "Open"]
+    after
+      Process.delete(:interactive_elements)
+    end
 
-        def new_tab(_instance, _opts), do: {:error, :unused}
-        def close_tab(_tab), do: :ok
-        def command(_tab, _method, _params, _opts), do: {:ok, %{}}
-        def navigate(_tab, _url, _opts), do: :ok
-        def evaluate(_tab, _expression, _opts), do: {:ok, nil}
-        def url(_tab), do: {:ok, "https://fake.local/"}
-        def title(_tab), do: {:ok, "Fake"}
-        def html(_tab, _opts), do: {:ok, ""}
-        def markdown(_tab, _opts), do: {:ok, ""}
-        def semantic_tree(_tab, _opts), do: {:ok, %{}}
+    test "deduplicates links and handles empty link lists" do
+      Process.put(:links, [
+        %{"href" => "https://example.com/a", "text" => "A"},
+        %{"href" => "https://example.com/a", "text" => "A duplicate"},
+        %{href: "https://example.com/b", text: "B"}
+      ])
 
-        def interactive_elements(_tab, _opts) do
-          {:ok,
-           [
-             %{
-               "tagName" => "a",
-               "role" => "link",
-               "href" => "https://example.com",
-               "name" => "Link"
-             },
-             %{"tagName" => "button", "role" => "button", "name" => "Go"}
-           ]}
-        end
+      context = %Context{
+        include: [:links],
+        view: %View{},
+        tab: %Tab{driver: ViewShapeProtocol}
+      }
 
-        def structured_data(_tab, _opts), do: {:ok, %{}}
-        def page_map(_tab, _opts), do: {:ok, %PageMap{}}
-        def focus(_tab, _ref, _opts), do: {:ok, %PageMap{}}
-        def links(_tab, _opts), do: {:ok, []}
-        def forms(_tab, _opts), do: {:ok, []}
-        def screenshot(_tab, _opts), do: {:ok, ""}
-        def pdf(_tab, _opts), do: {:ok, ""}
-        def click(_tab, _ref, _opts), do: :ok
-        def fill(_tab, _ref, _value, _opts), do: :ok
-        def submit(_tab, _ref, _fields, _opts), do: :ok
-        def wait_for_selector(_tab, _selector, _opts), do: :ok
-        def wait_for_navigation(_tab, fun, _opts), do: fun.()
-        def scroll(_tab, _opts), do: :ok
-      end
+      assert %{view: %View{links: links}} = Plugs.Links.call(context, [])
 
-      context = %{context | tab: %Tab{driver: LinkyProtocol}}
+      assert Enum.map(links, &(&1["href"] || &1[:href])) == [
+               "https://example.com/a",
+               "https://example.com/b"
+             ]
 
-      assert %{view: %View{interactive: [%{"name" => "Go"}]}} =
-               Plugs.Interactive.call(context, [])
+      Process.put(:links, [])
+      assert %{view: %View{links: []}} = Plugs.Links.call(context, [])
+    after
+      Process.delete(:links)
     end
 
     test "builds form and field actions" do

@@ -288,6 +288,55 @@ map.description
 The map contains regions such as navigation, hero, sidebar, gallery, content,
 contact form, and footer when Spectre Lens can infer them.
 
+For faster orientation, use `outline/2`. It returns compact text plus the
+structured sections behind that text:
+
+```elixir
+{:ok, outline} = SpectreLens.outline(tab)
+
+outline.text
+# [Navigation]
+# [Hero / Elchemista: A Builder’s Blog on Elixir, AI, and MVPs]
+# [Gallery / Featured Stories]
+# [Gallery / Explore topics]
+# [Gallery / Fresh from the Blog]
+# [Form / Stay updated]
+# [Footer]
+
+hero = Enum.find(outline.sections, &(&1.purpose == :hero))
+{:ok, hero_map} = SpectreLens.zoom_in(tab, hero)
+```
+
+Ask for a more descriptive outline with `:detailed`, `detailed: true`, or
+`detailed?: true`:
+
+```elixir
+{:ok, outline} = SpectreLens.outline(tab, [:detailed])
+
+outline.text
+# [ Hero / Elchemista: A Builder’s Blog on Elixir, AI, and MVPs ]
+#   [ Selector: div:nth-of-type(2) > section:nth-of-type(1) ]
+#   [ Heading: Elchemista: A Builder’s Blog on Elixir, AI, and MVPs ]
+#   [ Text: Welcome Elchemista: A Builder’s Blog on Elixir, AI, and MVPs ... ]
+#   [ Links: Latest articles | Book a Call ]
+#   [ Contains: 2 links, 1 images ]
+# [end Hero / Elchemista: A Builder’s Blog on Elixir, AI, and MVPs]
+```
+
+You can also map a URL through a runtime. Spectre Lens opens a temporary tab and
+closes it after building the outline:
+
+```elixir
+{:ok, outline} = SpectreLens.outline(lens, url: "https://elchemista.com", detailed: true)
+```
+
+For one-off inspection, pass only a URL. Spectre Lens starts and closes a
+temporary runtime:
+
+```elixir
+{:ok, outline} = SpectreLens.outline(url: "https://elchemista.com", detailed: true)
+```
+
 ## Actions
 
 Actions accept selectors, node ids, maps, and `%SpectreLens.ActionRef{}` values

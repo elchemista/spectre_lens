@@ -826,7 +826,8 @@ defmodule SpectreLens.Page do
   defp node_id(_tab, other, _timeout), do: {:error, SpectreLens.ElementNotFoundError.new(other)}
 
   @spec backend_node_id(Tab.t(), term(), non_neg_integer()) :: {:ok, integer()} | {:error, term()}
-  defp backend_node_id(%Tab{} = tab, backend_node_id, timeout) when is_integer(backend_node_id) do
+  defp backend_node_id(%Tab{} = tab, backend_node_id, timeout)
+       when is_integer(backend_node_id) and backend_node_id > 0 do
     case command(
            tab,
            "DOM.pushNodesByBackendIdsToFrontend",
@@ -1012,7 +1013,9 @@ defmodule SpectreLens.Page do
         'header', 'nav', 'main', 'aside', 'footer', 'section', 'article', 'form',
         '[role="navigation"]', '[role="banner"]', '[role="main"]', '[role="contentinfo"]',
         '[role="complementary"]', '[role="search"]', '[class*="hero" i]',
-        '[class*="sidebar" i]', '[class*="gallery" i]', '[class*="contact" i]'
+        '[class*="sidebar" i]', '[class*="gallery" i]', '[class*="contact" i]',
+        '[class*="header" i]', '[class*="navbar" i]', '[class*="nav" i]',
+        '[class*="newsletter" i]', '[class*="subscribe" i]', '[class*="pricing" i]'
       ].join(',');
       const candidates = Array.from(scope.querySelectorAll(query));
       if (scope !== document.body && scope !== document.documentElement) candidates.unshift(scope);
@@ -1085,7 +1088,8 @@ defmodule SpectreLens.Page do
           if (haystack.includes('search')) return 'search_form';
           return 'form';
         }
-        if (haystack.includes('hero') || (order === 0 && stats.headings > 0)) return 'hero';
+        if (haystack.includes('hero') || el.querySelector('h1') || (order === 0 && stats.headings > 0)) return 'hero';
+        if (stats.fields > 0 || haystack.includes('newsletter') || haystack.includes('subscribe')) return 'form';
         if (haystack.includes('gallery') || stats.images >= 3) return 'gallery';
         if (stats.links >= 5 && stats.textLength < 500) return 'link_collection';
         return 'content_section';

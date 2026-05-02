@@ -7,7 +7,18 @@ defmodule SpectreLens do
   forms, links, structured data and action references.
   """
 
-  alias SpectreLens.{Context, LlmsTxt, PlugPipeline, Runtime, Session, Tab, View, Watcher}
+  alias SpectreLens.{
+    Context,
+    LlmsTxt,
+    Outline,
+    PlugPipeline,
+    Region,
+    Runtime,
+    Session,
+    Tab,
+    View,
+    Watcher
+  }
 
   @default_include [:markdown, :interactive, :forms, :links]
 
@@ -171,13 +182,84 @@ defmodule SpectreLens do
     SpectreLens.Errors.safe(:zoom_out, fn -> SpectreLens.Protocol.page_map(tab, opts) end)
   end
 
+  @doc """
+  Returns a compact section outline for the current page.
+
+  Pass `:detailed`, `detailed: true`, or `detailed?: true` for a fuller outline.
+  Pass a runtime with `url: "https://..."` to open a temporary tab for the outline.
+  """
+  @spec outline(Tab.t() | Runtime.t() | pid() | keyword(), keyword()) ::
+          {:ok, Outline.t()} | {:error, term()}
+  def outline(target, opts \\ [])
+
+  def outline(opts, []) when is_list(opts) do
+    opts = normalize_opts(opts)
+
+    SpectreLens.Errors.safe(:outline, fn ->
+      with {:ok, _url} <- Keyword.fetch(opts, :url),
+           {:ok, runtime} <- open(runtime_opts(opts)) do
+        try do
+          outline(runtime, opts)
+        after
+          close(runtime)
+        end
+      else
+        :error -> {:error, :missing_url}
+        {:error, _} = error -> error
+      end
+    end)
+  end
+
+  def outline(%Tab{} = tab, opts) do
+    opts = normalize_opts(opts)
+
+    SpectreLens.Errors.safe(:outline, fn ->
+      with {:ok, page_map} <- SpectreLens.Protocol.page_map(tab, Outline.page_map_opts(opts)) do
+        {:ok, Outline.from_regions(page_map.regions, opts)}
+      end
+    end)
+  end
+
+  def outline(%Runtime{} = runtime, opts), do: outline(runtime.pid, opts)
+
+  def outline(runtime, opts) when is_pid(runtime) do
+    opts = normalize_opts(opts)
+
+    SpectreLens.Errors.safe(:outline, fn ->
+      with {:ok, url} <- Keyword.fetch(opts, :url),
+           {:ok, tab} <- Runtime.new_tab(runtime, url: url) do
+        try do
+          with {:ok, page_map} <- SpectreLens.Protocol.page_map(tab, Outline.page_map_opts(opts)) do
+            {:ok, Outline.from_regions(page_map.regions, opts)}
+          end
+        after
+          SpectreLens.Protocol.close_tab(tab)
+        end
+      else
+        :error -> {:error, :missing_url}
+        {:error, _} = error -> error
+      end
+    end)
+  end
+
   @doc "Alias for `zoom_out/2`, useful when an agent wants to step back from a focused element."
   @spec unfocus(Tab.t(), keyword()) :: {:ok, SpectreLens.PageMap.t()} | {:error, term()}
   def unfocus(%Tab{} = tab, opts \\ []), do: zoom_out(tab, opts)
 
   @doc "Zooms into one selector, action ref, or region and describes that local area."
   @spec zoom_in(Tab.t(), term(), keyword()) :: {:ok, SpectreLens.PageMap.t()} | {:error, term()}
-  def zoom_in(%Tab{} = tab, ref, opts \\ []) do
+  def zoom_in(tab, ref, opts \\ [])
+
+  def zoom_in(%Tab{} = tab, %Region{selector: selector}, opts) when is_binary(selector) do
+    zoom_in(tab, selector, opts)
+  end
+
+  def zoom_in(%Tab{} = tab, %Outline.Section{selector: selector}, opts)
+      when is_binary(selector) do
+    zoom_in(tab, selector, opts)
+  end
+
+  def zoom_in(%Tab{} = tab, ref, opts) do
     SpectreLens.Errors.safe(:zoom_in, fn -> SpectreLens.Protocol.focus(tab, ref, opts) end)
   end
 
@@ -271,6 +353,19 @@ defmodule SpectreLens do
   defp navigation_url(%{"href" => href}) when is_binary(href), do: {:ok, href}
   defp navigation_url(%{href: href}) when is_binary(href), do: {:ok, href}
   defp navigation_url(other), do: {:error, {:missing_navigation_url, other}}
+
+  @spec runtime_opts(keyword()) :: keyword()
+  defp runtime_opts(opts) do
+    Keyword.take(opts, [:binary, :driver, :host, :instances, :port, :ports, :serve_args, :timeout])
+  end
+
+  @spec normalize_opts(list()) :: keyword()
+  defp normalize_opts(opts) do
+    Enum.map(opts, fn
+      {key, value} -> {key, value}
+      key when is_atom(key) -> {key, true}
+    end)
+  end
 
   @spec safe_export(:screenshot | :html | :markdown | :pdf, Tab.t(), keyword()) ::
           {:ok, binary()} | {:ok, Path.t()} | {:error, term()}

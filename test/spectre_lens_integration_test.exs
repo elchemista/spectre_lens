@@ -74,6 +74,55 @@ defmodule SpectreLensIntegrationTest do
     end
   end
 
+  test "actions return element errors for bad refs" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    {:ok, server} = start_http_server("<html><body><button id=\"ok\">OK</button></body></html>")
+    assert {:ok, lens} = SpectreLens.open(instances: 1)
+
+    try do
+      assert {:ok, tab} = SpectreLens.new_tab(lens, url: "http://127.0.0.1:#{server.port}/")
+
+      assert {:error, %SpectreLens.ElementNotFoundError{}} =
+               SpectreLens.act(tab, {:click, ref: "#missing-button"})
+
+      assert {:error, %SpectreLens.ElementNotFoundError{}} =
+               SpectreLens.act(tab, {:fill, ref: "#missing-input", value: "nope"})
+
+      assert {:error, %SpectreLens.ElementNotFoundError{}} =
+               SpectreLens.act(tab, {:click, ref: %{"href" => "https://example.com/missing"}})
+
+      assert {:error, %SpectreLens.ElementNotFoundError{}} =
+               SpectreLens.act(tab, {:click, ref: %{"backendNodeId" => -1}})
+    after
+      SpectreLens.close(lens)
+      stop_http_server(server)
+    end
+  end
+
+  test "outline can inspect a URL with a temporary runtime" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+
+    {:ok, server} =
+      start_http_server("""
+      <html>
+        <body>
+          <section class="hero"><h1>Temporary outline</h1><a href="#next">Next</a></section>
+          <footer>Done</footer>
+        </body>
+      </html>
+      """)
+
+    try do
+      assert {:ok, outline} =
+               SpectreLens.outline(url: "http://127.0.0.1:#{server.port}/", detailed: true)
+
+      assert outline.text =~ "Temporary outline"
+      assert Enum.any?(outline.sections, &(&1.purpose == :hero))
+    after
+      stop_http_server(server)
+    end
+  end
+
   test "copies saved cookies and web storage into isolated session tabs" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
     {:ok, server} = start_http_server("<html><body>session test</body></html>")
