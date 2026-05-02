@@ -182,7 +182,7 @@ defmodule SpectreLens.Errors do
 
   @spec generic_hint(atom()) :: binary() | nil
   defp generic_hint(:tab_capacity_exceeded) do
-    "Close unused tabs or start SpectreLens.open/1 with more instances or a larger max_tabs_per_instance."
+    "Close unused tabs or start SpectreLens.open/1 with more instances. Lightpanda currently supports one live tab per instance."
   end
 
   defp generic_hint(:unknown_action) do

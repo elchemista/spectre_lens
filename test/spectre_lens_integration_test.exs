@@ -5,13 +5,41 @@ defmodule SpectreLensIntegrationTest do
 
   test "opens a runtime, navigates, and exports markdown when Lightpanda is available" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
-    assert {:ok, lens} = SpectreLens.open(instances: 1, max_tabs_per_instance: 2)
+    assert {:ok, lens} = SpectreLens.open(instances: 1)
 
     try do
       assert {:ok, tab} = SpectreLens.new_tab(lens, url: "https://example.com")
-      assert {:ok, view} = SpectreLens.look(tab, include: [:markdown, :links])
+      assert {:ok, view} = SpectreLens.look(tab, include: [:markdown, :semantic_tree, :links])
       assert view.url =~ "example.com"
       assert is_binary(view.markdown)
+      assert is_map(view.semantic_tree)
+    after
+      SpectreLens.close(lens)
+    end
+  end
+
+  test "ignores max_tabs_per_instance for Lightpanda and reports tab capacity" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 1, max_tabs_per_instance: 8)
+
+    try do
+      assert {:ok, _tab} = SpectreLens.new_tab(lens, url: "https://example.com")
+
+      assert {:error, :tab_capacity_exceeded} =
+               SpectreLens.new_tab(lens, url: "https://elchemista.com")
+    after
+      SpectreLens.close(lens)
+    end
+  end
+
+  test "balances concurrent Lightpanda tabs across instances" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 2)
+
+    try do
+      assert {:ok, first} = SpectreLens.new_tab(lens, url: "https://example.com")
+      assert {:ok, second} = SpectreLens.new_tab(lens, url: "https://elchemista.com")
+      assert first.instance_id != second.instance_id
     after
       SpectreLens.close(lens)
     end
@@ -20,7 +48,7 @@ defmodule SpectreLensIntegrationTest do
   test "copies saved cookies and web storage into isolated session tabs" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
     {:ok, server} = start_http_server("<html><body>session test</body></html>")
-    assert {:ok, lens} = SpectreLens.open(instances: 2, max_tabs_per_instance: 4)
+    assert {:ok, lens} = SpectreLens.open(instances: 2)
 
     url = "http://127.0.0.1:#{server.port}/"
 

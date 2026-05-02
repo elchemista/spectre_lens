@@ -105,8 +105,8 @@ defmodule SpectreLens.Runtime do
   def init(opts) do
     Process.flag(:trap_exit, true)
     instance_count = opts[:instances] || 1
-    max_tabs = opts[:max_tabs_per_instance] || 8
     driver = SpectreLens.Protocol.driver(opts)
+    max_tabs = effective_max_tabs_per_instance(driver, opts)
     session_table = :ets.new(:spectre_lens_sessions, [:set, :protected, :compressed])
 
     case start_instances(instance_count, opts) do
@@ -386,6 +386,11 @@ defmodule SpectreLens.Runtime do
     instance.tabs < max_tabs and (not session_tab? or instance.session_contexts < 1)
   end
 
+  @spec effective_max_tabs_per_instance(module(), keyword()) :: pos_integer()
+  defp effective_max_tabs_per_instance(SpectreLens.Protocol.LightpandaCDP, _opts), do: 1
+
+  defp effective_max_tabs_per_instance(_driver, opts), do: opts[:max_tabs_per_instance] || 8
+
   @spec bump_instance_counts([map()], term(), Tab.t(), integer()) :: [map()]
   defp bump_instance_counts(instances, id, tab, delta) do
     Enum.map(instances, fn
@@ -422,9 +427,11 @@ defmodule SpectreLens.Runtime do
 
   @spec runtime_metadata(keyword()) :: map()
   defp runtime_metadata(opts) do
+    driver = SpectreLens.Protocol.driver(opts)
+
     %{
       instances: opts[:instances] || 1,
-      max_tabs_per_instance: opts[:max_tabs_per_instance] || 8
+      max_tabs_per_instance: effective_max_tabs_per_instance(driver, opts)
     }
   end
 end

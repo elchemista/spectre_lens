@@ -265,10 +265,20 @@ defmodule SpectreLensTest do
 
     test "public act/export/cdp dispatch through protocol driver" do
       tab = %Tab{driver: FakeProtocol}
+      export_path = Path.join(System.tmp_dir!(), "spectre-lens-export-test.png")
+      File.rm(export_path)
 
+      assert :ok = SpectreLens.close_tab(tab)
       assert :ok = SpectreLens.act(tab, {:click, ref: "#go"})
       assert :ok = SpectreLens.act(tab, {:fill, ref: "#q", value: "lens"})
       assert {:ok, "png"} = SpectreLens.export(tab, :screenshot)
+      assert {:ok, ^export_path} = SpectreLens.export(tab, :screenshot, path: export_path)
+      assert File.read!(export_path) == "png"
+      pdf_path = Path.join(System.tmp_dir!(), "spectre-lens-export-test.pdf")
+      File.rm(pdf_path)
+
+      assert {:ok, ^pdf_path} = SpectreLens.export(tab, :pdf, path: pdf_path)
+      assert File.read!(pdf_path) == "pdf"
 
       assert {:ok, %{method: "Browser.getVersion", params: %{}}} =
                SpectreLens.cdp(tab, "Browser.getVersion")

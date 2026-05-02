@@ -135,7 +135,7 @@ defmodule SpectreLens.Page do
 
       params =
         %{}
-        |> maybe_put("format", format_name(format))
+        |> maybe_put("format", semantic_tree_format(format))
         |> maybe_put("prune", opts[:prune])
 
       with {:ok, result} <- command(tab, "LP.getSemanticTree", params, opts) do
@@ -920,10 +920,11 @@ defmodule SpectreLens.Page do
   defp parse_evaluate_result(%{"result" => %{"value" => value}}), do: {:ok, value}
   defp parse_evaluate_result(%{"result" => result}), do: {:ok, result["value"]}
 
-  @spec format_name(atom() | binary()) :: binary()
-  defp format_name(:json), do: "json"
-  defp format_name(:text), do: "text"
-  defp format_name(other), do: to_string(other)
+  @spec semantic_tree_format(atom() | binary()) :: binary() | nil
+  defp semantic_tree_format(:json), do: nil
+  defp semantic_tree_format("json"), do: nil
+  defp semantic_tree_format(:text), do: "text"
+  defp semantic_tree_format(other), do: to_string(other)
 
   @spec selector_for(term()) :: binary() | nil
   defp selector_for(%SpectreLens.ActionRef{selector: selector}) when is_binary(selector),

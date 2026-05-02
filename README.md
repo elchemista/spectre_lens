@@ -50,7 +50,7 @@ You can also point Spectre Lens at an existing binary:
 ## Quick Start
 
 ```elixir
-{:ok, lens} = SpectreLens.open(instances: 2, max_tabs_per_instance: 8)
+{:ok, lens} = SpectreLens.open(instances: 2)
 {:ok, tab} = SpectreLens.new_tab(lens, url: "https://example.com")
 
 {:ok, view} =
@@ -70,9 +70,48 @@ map.description
 :ok = SpectreLens.act(tab, {:fill, ref: "#q", value: "spectre"})
 :ok = SpectreLens.act(tab, {:click, ref: "button[type=submit]"})
 
-{:ok, png} = SpectreLens.export(tab, :screenshot)
+{:ok, "screenshots/example.png"} =
+  SpectreLens.export(tab, :screenshot, path: "screenshots/example.png")
 
 :ok = SpectreLens.close(lens)
+```
+
+## Lightpanda Runtime Model
+
+Spectre Lens currently ships with the Lightpanda CDP driver. Chrome, WebDriver
+BiDi, MCP, or another browser backend could implement `SpectreLens.Protocol`
+later, but they are not included today.
+
+With the current Lightpanda driver:
+
+- `instances: n` starts `n` Lightpanda browser processes.
+- Each Lightpanda instance supports one live tab at a time.
+- Concurrent tabs require multiple instances.
+- `max_tabs_per_instance` is ignored for Lightpanda because Lightpanda rejects a
+  second live CDP target with `TargetAlreadyLoaded`.
+- When all Lightpanda instances already have a live tab, `new_tab/2` returns
+  `{:error, :tab_capacity_exceeded}`.
+
+For example, two concurrent tabs need two instances:
+
+```elixir
+{:ok, lens} = SpectreLens.open(instances: 2)
+
+{:ok, first} = SpectreLens.new_tab(lens, url: "https://example.com")
+{:ok, second} = SpectreLens.new_tab(lens, url: "https://elchemista.com")
+
+first.instance_id != second.instance_id
+```
+
+To open another page on a single-instance runtime, close the current tab first:
+
+```elixir
+{:ok, lens} = SpectreLens.open(instances: 1)
+
+{:ok, tab} = SpectreLens.new_tab(lens, url: "https://example.com")
+:ok = SpectreLens.close_tab(tab)
+
+{:ok, next_tab} = SpectreLens.new_tab(lens, url: "https://elchemista.com")
 ```
 
 ## Browser Sessions
@@ -107,8 +146,8 @@ of starting with an empty snapshot:
 SpectreLens.new_tab(lens, session: :work, require_session?: true)
 ```
 
-Local Lightpanda builds currently allow one live browser context per instance,
-so concurrent session tabs are balanced across runtime instances.
+Local Lightpanda builds currently allow one live tab per instance, so concurrent
+session tabs are balanced across runtime instances.
 
 ## Agent Views
 
@@ -146,6 +185,24 @@ You can request more:
 SpectreLens.look(tab,
   include: [:html, :markdown, :semantic_tree, :semantic_text, :interactive, :forms, :links, :structured_data, :llms]
 )
+```
+
+`semantic_tree` returns Lightpanda's structured tree. `semantic_text` returns
+Lightpanda's text tree:
+
+```elixir
+{:ok, view} = SpectreLens.look(tab, include: [:semantic_tree, :semantic_text])
+
+view.semantic_tree
+view.semantic_text
+```
+
+Exports return binaries by default. Pass `:path` or `:to` to save the artifact
+and receive the saved path instead:
+
+```elixir
+{:ok, "tmp/page.png"} = SpectreLens.export(tab, :screenshot, path: "tmp/page.png")
+{:ok, "tmp/page.html"} = SpectreLens.export(tab, :html, to: "tmp/page.html")
 ```
 
 Disable automatic `llms.txt` discovery when you only want browser-rendered
@@ -251,6 +308,14 @@ Raw protocol commands are still available:
 {:ok, html} = SpectreLens.export(tab, :html)
 {:ok, markdown} = SpectreLens.export(tab, :markdown)
 {:ok, pdf} = SpectreLens.export(tab, :pdf)
+```
+
+Pass `:path` or `:to` to write an export directly to disk:
+
+```elixir
+{:ok, "tmp/page.png"} = SpectreLens.export(tab, :screenshot, path: "tmp/page.png")
+{:ok, "tmp/page.pdf"} = SpectreLens.export(tab, :pdf, path: "tmp/page.pdf")
+{:ok, "tmp/page.html"} = SpectreLens.export(tab, :html, to: "tmp/page.html")
 ```
 
 PDF uses `Page.printToPDF`. If the active browser does not support it, Spectre

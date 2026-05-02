@@ -11,7 +11,12 @@ defmodule SpectreLens do
 
   @default_include [:markdown, :interactive, :forms, :links]
 
-  @doc "Starts a Spectre Lens runtime."
+  @doc """
+  Starts a Spectre Lens runtime.
+
+  The default Lightpanda driver supports one live tab per instance. Use
+  `instances: n` when you need up to `n` concurrent Lightpanda tabs.
+  """
   @spec open(keyword()) :: {:ok, Runtime.t()} | {:error, term()}
   def open(opts \\ []) do
     SpectreLens.Errors.safe(:open, fn ->
@@ -25,6 +30,12 @@ defmodule SpectreLens do
   @spec new_tab(Runtime.t() | pid(), keyword()) :: {:ok, Tab.t()} | {:error, term()}
   def new_tab(runtime, opts \\ []) do
     SpectreLens.Errors.safe(:new_tab, fn -> Runtime.new_tab(runtime, opts) end)
+  end
+
+  @doc "Closes a tab and releases its runtime capacity."
+  @spec close_tab(Tab.t()) :: :ok | {:error, term()}
+  def close_tab(%Tab{} = tab) do
+    SpectreLens.Errors.safe(:close_tab, fn -> SpectreLens.Protocol.close_tab(tab) end)
   end
 
   @doc "Captures a tab's browser session into the runtime ETS session store."
@@ -136,7 +147,7 @@ defmodule SpectreLens do
 
   @doc "Exports page artifacts."
   @spec export(Tab.t(), :screenshot | :html | :markdown | :pdf, keyword()) ::
-          {:ok, binary()} | {:error, term()}
+          {:ok, binary()} | {:ok, Path.t()} | {:error, term()}
   def export(tab, type, opts \\ [])
   def export(tab, :screenshot, opts), do: safe_export(:screenshot, tab, opts)
   def export(tab, :html, opts), do: safe_export(:html, tab, opts)
@@ -247,20 +258,51 @@ defmodule SpectreLens do
   end
 
   @spec safe_export(:screenshot | :html | :markdown | :pdf, Tab.t(), keyword()) ::
-          {:ok, binary()} | {:error, term()}
+          {:ok, binary()} | {:ok, Path.t()} | {:error, term()}
   defp safe_export(:screenshot, tab, opts) do
-    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.screenshot(tab, opts) end)
+    SpectreLens.Errors.safe(:export, fn ->
+      with {:ok, data} <- SpectreLens.Protocol.screenshot(tab, opts) do
+        maybe_write_export(data, opts)
+      end
+    end)
   end
 
   defp safe_export(:html, tab, opts) do
-    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.html(tab, opts) end)
+    SpectreLens.Errors.safe(:export, fn ->
+      with {:ok, data} <- SpectreLens.Protocol.html(tab, opts) do
+        maybe_write_export(data, opts)
+      end
+    end)
   end
 
   defp safe_export(:markdown, tab, opts) do
-    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.markdown(tab, opts) end)
+    SpectreLens.Errors.safe(:export, fn ->
+      with {:ok, data} <- SpectreLens.Protocol.markdown(tab, opts) do
+        maybe_write_export(data, opts)
+      end
+    end)
   end
 
   defp safe_export(:pdf, tab, opts) do
-    SpectreLens.Errors.safe(:export, fn -> SpectreLens.Protocol.pdf(tab, opts) end)
+    SpectreLens.Errors.safe(:export, fn ->
+      with {:ok, data} <- SpectreLens.Protocol.pdf(tab, opts) do
+        maybe_write_export(data, opts)
+      end
+    end)
+  end
+
+  @spec maybe_write_export(binary(), keyword()) ::
+          {:ok, binary()} | {:ok, Path.t()} | {:error, term()}
+  defp maybe_write_export(data, opts) do
+    case opts[:path] || opts[:to] do
+      nil ->
+        {:ok, data}
+
+      path when is_binary(path) ->
+        with :ok <- File.mkdir_p(Path.dirname(path)),
+             :ok <- File.write(path, data) do
+          {:ok, path}
+        end
+    end
   end
 end
