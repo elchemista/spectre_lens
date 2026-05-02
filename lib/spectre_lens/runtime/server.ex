@@ -107,7 +107,7 @@ defmodule SpectreLens.Runtime do
     instance_count = opts[:instances] || 1
     max_tabs = opts[:max_tabs_per_instance] || 8
     driver = SpectreLens.Protocol.driver(opts)
-    session_table = :ets.new(:spectre_lens_sessions, [:set, :protected])
+    session_table = :ets.new(:spectre_lens_sessions, [:set, :protected, :compressed])
 
     case start_instances(instance_count, opts) do
       {:ok, instances} ->
