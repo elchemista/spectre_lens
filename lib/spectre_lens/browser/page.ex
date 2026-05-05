@@ -59,7 +59,8 @@ defmodule SpectreLens.Page do
 
       result =
         with {:ok, _} <- Connection.send_command(conn, "Page.navigate", %{url: url}, timeout, sid),
-             {:ok, _} <- Connection.await_event(wait_ref, timeout) do
+             {:ok, _} <- Connection.await_event(wait_ref, timeout),
+             :ok <- maybe_wait_for_usable_document(conn, sid, opts, timeout) do
           :ok
         end
 
@@ -645,6 +646,78 @@ defmodule SpectreLens.Page do
     case Connection.await_event(wait_ref, timeout) do
       {:ok, _} -> :ok
       {:error, _} = error -> error
+    end
+  end
+
+  @spec maybe_wait_for_usable_document(pid(), binary(), keyword(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  defp maybe_wait_for_usable_document(conn, sid, opts, timeout) do
+    if Keyword.get(opts, :wait_for_content?, true) do
+      interval = opts[:content_interval] || 100
+      deadline = System.monotonic_time(:millisecond) + (opts[:content_timeout] || timeout)
+      do_wait_for_usable_document(conn, sid, interval, deadline)
+    else
+      :ok
+    end
+  end
+
+  @spec do_wait_for_usable_document(pid(), binary(), non_neg_integer(), integer(), map() | nil) ::
+          :ok | {:error, term()}
+  defp do_wait_for_usable_document(conn, sid, interval, deadline, last_state \\ nil) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    cond do
+      remaining == 0 ->
+        {:error, {:empty_document_after_navigation, last_state || %{}}}
+
+      true ->
+        case usable_document_state(conn, sid, min(remaining, 1_000)) do
+          {:ok, %{"usable" => true}} ->
+            :ok
+
+          {:ok, state} ->
+            Process.sleep(min(interval, remaining))
+            do_wait_for_usable_document(conn, sid, interval, deadline, state)
+
+          {:error, reason} ->
+            Process.sleep(min(interval, remaining))
+            do_wait_for_usable_document(conn, sid, interval, deadline, %{error: inspect(reason)})
+        end
+    end
+  end
+
+  @spec usable_document_state(pid(), binary(), non_neg_integer()) ::
+          {:ok, map()} | {:error, term()}
+  defp usable_document_state(conn, sid, timeout) do
+    expression = """
+    (() => {
+      const root = document.documentElement;
+      const body = document.body;
+      const htmlLength = root ? root.outerHTML.length : 0;
+      const childCount = root ? root.childElementCount : 0;
+      const bodyTextLength = body ? (body.innerText || body.textContent || '').trim().length : 0;
+
+      return {
+        url: window.location.href,
+        title: document.title,
+        readyState: document.readyState,
+        htmlLength,
+        childCount,
+        bodyTextLength,
+        usable: !!root && childCount > 0 && htmlLength > 39
+      };
+    })()
+    """
+
+    with {:ok, payload} <-
+           cdp(
+             conn,
+             sid,
+             "Runtime.evaluate",
+             %{expression: expression, returnByValue: true, awaitPromise: true},
+             timeout
+           ) do
+      parse_evaluate_result(payload)
     end
   end
 

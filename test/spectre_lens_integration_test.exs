@@ -85,6 +85,42 @@ defmodule SpectreLensIntegrationTest do
     end
   end
 
+  test "captures markdown from paginebianche company search with exact multi-instance flow" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 2)
+
+    try do
+      assert {:ok, tab} =
+               SpectreLens.new_tab(lens,
+                 url: "https://www.paginebianche.it/aziende?qs=IT&dv=Italia",
+                 timeout: @real_content_timeout
+               )
+
+      assert {:ok, view} =
+               SpectreLens.look(tab,
+                 include: [
+                   :markdown,
+                   :semantic_tree,
+                   :interactive,
+                   :forms,
+                   :links,
+                   :structured_data
+                 ],
+                 timeout: @real_content_timeout
+               )
+
+      assert view.url =~ "paginebianche.it"
+      assert view.title =~ "PagineBianche"
+      assert byte_size(view.markdown) > 500
+      assert length(view.links) > 0
+      assert length(view.interactive) > 0
+      assert semantic_child_count(view.semantic_tree) > 0
+      refute Enum.any?(view.errors, &match?({:empty_page_projection, _}, &1))
+    after
+      SpectreLens.close(lens)
+    end
+  end
+
   test "clicks and navigates links by text" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
     assert {:ok, lens} = SpectreLens.open(instances: 1)

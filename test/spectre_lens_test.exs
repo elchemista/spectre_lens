@@ -315,6 +315,27 @@ defmodule SpectreLensTest do
       assert Enum.any?(view.actions, &match?(%ActionRef{kind: :link}, &1))
     end
 
+    test "look reports completely empty requested page projections" do
+      tab = %Tab{driver: ViewShapeProtocol}
+
+      assert {:ok, view} =
+               SpectreLens.look(tab,
+                 llms?: false,
+                 include: [:markdown, :semantic_tree, :interactive, :forms, :links]
+               )
+
+      assert {:empty_page_projection,
+              %{
+                url: "https://shape.local/",
+                title: "Shape",
+                markdown_size: 0,
+                semantic_children: 0,
+                interactive_count: 0,
+                form_count: 0,
+                link_count: 0
+              }} in view.errors
+    end
+
     test "public act/export/cdp dispatch through protocol driver" do
       tab = %Tab{driver: FakeProtocol}
       export_path = Path.join(System.tmp_dir!(), "spectre-lens-export-test.png")

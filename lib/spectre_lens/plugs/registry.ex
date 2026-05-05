@@ -16,6 +16,7 @@ defmodule SpectreLens.Plugs do
       SpectreLens.Plugs.LlmsTxt,
       SpectreLens.Plugs.NormalizeMarkdown,
       SpectreLens.Plugs.ActionRefs,
+      SpectreLens.Plugs.EmptyViewDiagnostics,
       SpectreLens.Plugs.Hash
     ]
   end
