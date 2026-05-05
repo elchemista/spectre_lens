@@ -210,7 +210,12 @@ defmodule SpectreLens.Runtime do
 
   @spec open_tab(map(), keyword()) :: {:ok, SpectreLens.Tab.t()} | {:error, term()}
   defp open_tab(instance, opts) do
-    SpectreLens.Protocol.new_tab(instance, Keyword.put(opts, :runtime, self()))
+    tab_opts =
+      opts
+      |> Keyword.put(:runtime, self())
+      |> Keyword.put(:url, "about:blank")
+
+    SpectreLens.Protocol.new_tab(instance, tab_opts)
   end
 
   @spec maybe_navigate(SpectreLens.Tab.t(), keyword()) ::

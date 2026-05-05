@@ -2,6 +2,12 @@ defmodule SpectreLensIntegrationTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
+  @real_content_pages [
+    {"https://google.com", "google.com"},
+    {"https://www.paginebianche.it/aziende?qs=IT&dv=Italia", "paginebianche.it"},
+    {"https://filmix.my/", "filmix.my"},
+    {"https://www.paginegialle.it/supermercati-aperti", "paginegialle.it"}
+  ]
 
   test "opens a runtime, navigates, and exports markdown when Lightpanda is available" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
@@ -40,6 +46,38 @@ defmodule SpectreLensIntegrationTest do
       assert {:ok, first} = SpectreLens.new_tab(lens, url: "https://example.com")
       assert {:ok, second} = SpectreLens.new_tab(lens, url: "https://elchemista.com")
       assert first.instance_id != second.instance_id
+    after
+      SpectreLens.close(lens)
+    end
+  end
+
+  test "exports content from real multi-instance pages" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 2)
+
+    try do
+      for {url, expected_host} <- @real_content_pages do
+        assert {:ok, tab} = SpectreLens.new_tab(lens, url: url, timeout: 45_000)
+
+        try do
+          assert {:ok, view} =
+                   SpectreLens.look(tab,
+                     include: [
+                       :markdown,
+                       :semantic_tree,
+                       :interactive,
+                       :forms,
+                       :links,
+                       :structured_data
+                     ],
+                     timeout: 45_000
+                   )
+
+          assert_real_page_content(view, expected_host)
+        after
+          SpectreLens.close_tab(tab)
+        end
+      end
     after
       SpectreLens.close(lens)
     end
@@ -209,6 +247,21 @@ defmodule SpectreLensIntegrationTest do
     uri = URI.parse(url)
     "#{uri.scheme}://#{uri.host}:#{uri.port}"
   end
+
+  defp assert_real_page_content(view, expected_host) do
+    assert view.url =~ expected_host
+    assert is_binary(view.title)
+    assert byte_size(view.title) > 0
+    assert byte_size(view.markdown) > 500
+    assert length(view.links) > 0
+    assert length(view.interactive) > 0
+    assert semantic_child_count(view.semantic_tree) > 0
+  end
+
+  defp semantic_child_count(%{"children" => children}) when is_list(children),
+    do: length(children)
+
+  defp semantic_child_count(_tree), do: 0
 
   defp start_http_server(body) do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
