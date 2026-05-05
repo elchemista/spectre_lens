@@ -8,6 +8,7 @@ defmodule SpectreLensIntegrationTest do
     {"https://filmix.my/", "filmix.my"},
     {"https://www.paginegialle.it/supermercati-aperti", "paginegialle.it"}
   ]
+  @real_content_timeout 90_000
 
   test "opens a runtime, navigates, and exports markdown when Lightpanda is available" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
@@ -57,7 +58,7 @@ defmodule SpectreLensIntegrationTest do
 
     try do
       for {url, expected_host} <- @real_content_pages do
-        assert {:ok, tab} = SpectreLens.new_tab(lens, url: url, timeout: 45_000)
+        assert {:ok, tab} = SpectreLens.new_tab(lens, url: url, timeout: @real_content_timeout)
 
         try do
           assert {:ok, view} =
@@ -70,10 +71,11 @@ defmodule SpectreLensIntegrationTest do
                        :links,
                        :structured_data
                      ],
-                     timeout: 45_000
+                     timeout: @real_content_timeout
                    )
 
           assert_real_page_content(view, expected_host)
+          assert_agent_views_have_content(tab)
         after
           SpectreLens.close_tab(tab)
         end
@@ -256,6 +258,35 @@ defmodule SpectreLensIntegrationTest do
     assert length(view.links) > 0
     assert length(view.interactive) > 0
     assert semantic_child_count(view.semantic_tree) > 0
+  end
+
+  defp assert_agent_views_have_content(tab) do
+    assert {:ok, outline} =
+             SpectreLens.outline(tab, detailed: true, timeout: @real_content_timeout)
+
+    assert byte_size(outline.text) > 0
+    assert length(outline.sections) > 0
+
+    assert {:ok, page_map} = SpectreLens.zoom_out(tab, timeout: @real_content_timeout)
+    assert byte_size(page_map.description) > 0
+    assert length(page_map.regions) > 0
+
+    selector =
+      outline.sections
+      |> Enum.map(& &1.selector)
+      |> Enum.find(&is_binary/1)
+
+    assert is_binary(selector)
+
+    assert {:ok, focused} = SpectreLens.zoom_in(tab, selector, timeout: @real_content_timeout)
+    assert byte_size(focused.description) > 0
+    assert length(focused.regions) > 0
+
+    assert {:ok, markdown} = SpectreLens.export(tab, :markdown, timeout: @real_content_timeout)
+    assert byte_size(markdown) > 500
+
+    assert {:ok, html} = SpectreLens.export(tab, :html, timeout: @real_content_timeout)
+    assert byte_size(html) > 1_000
   end
 
   defp semantic_child_count(%{"children" => children}) when is_list(children),
