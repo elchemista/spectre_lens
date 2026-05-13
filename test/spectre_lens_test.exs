@@ -5,6 +5,7 @@ defmodule SpectreLensTest do
     ActionRef,
     ConnectionError,
     Context,
+    Discovery,
     Lightpanda,
     LlmsTxt,
     Outline,
@@ -18,6 +19,8 @@ defmodule SpectreLensTest do
   }
 
   alias SpectreLens.CDP.Connection
+  alias SpectreLens.Discovery.Candidate
+  alias SpectreLens.Discovery.DeterministicScorer
   alias SpectreLens.Plugs
 
   defmodule AssignPlug do
@@ -178,6 +181,81 @@ defmodule SpectreLensTest do
     def wait_for_selector(_tab, _selector, _opts), do: :ok
     def wait_for_navigation(_tab, fun, _opts), do: fun.()
     def scroll(_tab, _opts), do: :ok
+  end
+
+  defmodule DiscoveryProtocol do
+    @behaviour SpectreLens.Protocol
+
+    def new_tab(_instance, _opts), do: {:error, :unused}
+    def close_tab(_tab), do: :ok
+    def command(_tab, method, params, _opts), do: {:ok, %{method: method, params: params}}
+
+    def navigate(_tab, url, _opts) do
+      Process.put(:discovery_current_url, url)
+      :ok
+    end
+
+    def evaluate(_tab, _expression, _opts), do: {:ok, nil}
+    def url(_tab), do: {:ok, current_url()}
+    def title(_tab), do: {:ok, page()["title"]}
+    def html(_tab, _opts), do: {:ok, page()["html"] || ""}
+    def markdown(_tab, _opts), do: {:ok, page()["markdown"] || ""}
+    def semantic_tree(_tab, _opts), do: {:ok, %{}}
+    def interactive_elements(_tab, _opts), do: {:ok, page()["interactive"] || []}
+    def structured_data(_tab, _opts), do: {:ok, %{}}
+
+    def page_map(_tab, _opts) do
+      regions =
+        page()["regions"] ||
+          [
+            %Region{
+              purpose: :content_section,
+              label: page()["title"],
+              selector: "body",
+              links: page()["links"] || []
+            }
+          ]
+
+      {:ok, %PageMap{description: "Discovery test page", regions: regions}}
+    end
+
+    def focus(_tab, _ref, _opts), do: {:ok, %PageMap{}}
+    def links(_tab, _opts), do: {:ok, page()["links"] || []}
+    def forms(_tab, _opts), do: {:ok, page()["forms"] || []}
+    def screenshot(_tab, _opts), do: {:ok, ""}
+    def pdf(_tab, _opts), do: {:ok, ""}
+    def click(_tab, _ref, _opts), do: :ok
+    def fill(_tab, _ref, _value, _opts), do: :ok
+    def submit(_tab, _ref, _fields, _opts), do: :ok
+    def wait_for_selector(_tab, _selector, _opts), do: :ok
+    def wait_for_navigation(_tab, fun, _opts), do: fun.()
+    def scroll(_tab, _opts), do: :ok
+
+    defp current_url, do: Process.get(:discovery_current_url)
+
+    defp page do
+      Process.get(:discovery_pages, %{})
+      |> Map.fetch!(current_url())
+    end
+  end
+
+  defmodule PreferScorer do
+    @behaviour SpectreLens.Discovery.Scorer
+
+    def score_candidate(%Candidate{} = candidate, _context, opts) do
+      prefer = opts[:prefer] || ""
+      haystack = Enum.join([candidate.text, candidate.url], " ")
+
+      if String.contains?(haystack, prefer) do
+        {:ok, %{candidate | score: 99.0, reason: "custom preferred match"}}
+      else
+        {:ok, %{candidate | score: 1.0, reason: "custom fallback"}}
+      end
+    end
+
+    def rank_candidates(candidates, _context, _opts) do
+      {:ok, Enum.sort_by(candidates, & &1.score, :desc)}
+    end
   end
 
   describe "lightpanda install helpers" do
@@ -646,6 +724,152 @@ defmodule SpectreLensTest do
 
       assert {:error, %SpectreLens.ElementNotFoundError{}} =
                SpectreLens.act(tab, {:navigate, text: "settings"})
+    end
+  end
+
+  describe "goal-scoped discovery" do
+    setup do
+      root = "https://example.com/"
+
+      pages = %{
+        root => %{
+          "title" => "Home",
+          "markdown" => "Welcome. Find API reference, pricing, and account links.",
+          "links" => [
+            %{"href" => "/docs/api", "text" => "API reference", "selector" => "#api"},
+            %{"href" => "/pricing", "text" => "Pricing", "selector" => "#pricing"},
+            %{"href" => "/privacy", "text" => "Privacy policy", "selector" => "#privacy"},
+            %{"href" => "#top", "text" => "Top"},
+            %{"href" => "mailto:hello@example.com", "text" => "Email us"},
+            %{"href" => "https://elsewhere.test/docs", "text" => "External docs"}
+          ],
+          "forms" => [
+            %{"name" => "site-search", "selector" => "#search"}
+          ],
+          "regions" => [
+            %Region{
+              purpose: :navigation,
+              label: "Main navigation",
+              selector: "nav",
+              links: [
+                %{"href" => "/docs/api", "text" => "API reference"},
+                %{"href" => "/pricing", "text" => "Pricing"}
+              ]
+            }
+          ]
+        },
+        "https://example.com/docs/api" => %{
+          "title" => "API Reference",
+          "markdown" => "API reference documentation for agents and developers.",
+          "links" => [
+            %{"href" => "/docs/api/authentication", "text" => "Authentication API"}
+          ]
+        },
+        "https://example.com/pricing" => %{
+          "title" => "Pricing",
+          "markdown" => "Plans and billing.",
+          "links" => []
+        },
+        "https://example.com/privacy" => %{
+          "title" => "Privacy",
+          "markdown" => "Legal privacy information.",
+          "links" => []
+        }
+      }
+
+      Process.put(:discovery_current_url, root)
+      Process.put(:discovery_pages, pages)
+
+      on_exit(fn ->
+        Process.delete(:discovery_current_url)
+        Process.delete(:discovery_pages)
+      end)
+
+      {:ok, root: root}
+    end
+
+    test "returns compact context and ranked same-origin candidates", %{root: root} do
+      tab = %Tab{driver: DiscoveryProtocol}
+
+      assert {:ok, %Discovery{} = discovery} =
+               SpectreLens.discover(tab,
+                 goal: "api reference",
+                 max_depth: 1,
+                 max_pages: 3,
+                 max_candidates: 5
+               )
+
+      assert discovery.root_url == root
+      assert discovery.text =~ "Goal: api reference"
+      assert Enum.any?(discovery.visited, &(&1.url == "https://example.com/docs/api"))
+      assert [%Candidate{text: "API reference"} | _] = discovery.candidates
+      assert Enum.all?(discovery.candidates, &String.starts_with?(&1.url, root))
+      refute Enum.any?(discovery.candidates, &String.contains?(&1.url, "mailto:"))
+      refute Enum.any?(discovery.candidates, &String.contains?(&1.url, "elsewhere"))
+      assert [%{source_url: ^root, depth: 0} | _] = discovery.forms
+    end
+
+    test "caps large link sets and records truncation warnings", %{root: root} do
+      links =
+        for index <- 1..100 do
+          %{"href" => "/products/#{index}", "text" => "Product #{index}"}
+        end
+
+      pages =
+        Process.get(:discovery_pages)
+        |> Map.put(root, %{
+          "title" => "Products",
+          "markdown" => "Large product directory.",
+          "links" => links
+        })
+
+      Process.put(:discovery_pages, pages)
+
+      tab = %Tab{driver: DiscoveryProtocol}
+
+      assert {:ok, discovery} =
+               SpectreLens.discover(tab,
+                 goal: "product 42",
+                 max_depth: 1,
+                 max_pages: 1,
+                 max_links_per_page: 5,
+                 max_candidates: 20
+               )
+
+      assert length(discovery.candidates) == 5
+      assert Enum.any?(discovery.warnings, &match?({:links_truncated, ^root, 100, 5}, &1))
+    end
+
+    test "accepts a custom scorer with options", %{root: root} do
+      pages =
+        Process.get(:discovery_pages)
+        |> Map.put(root, %{
+          "title" => "Home",
+          "markdown" => "Custom scoring.",
+          "links" => [
+            %{"href" => "/normal", "text" => "Normal"},
+            %{"href" => "/special", "text" => "Special"}
+          ]
+        })
+
+      Process.put(:discovery_pages, pages)
+
+      tab = %Tab{driver: DiscoveryProtocol}
+
+      assert {:ok, discovery} =
+               SpectreLens.discover(tab,
+                 goal: "anything",
+                 max_pages: 1,
+                 scorer: {PreferScorer, prefer: "Special"}
+               )
+
+      assert [%Candidate{text: "Special", score: 99.0, reason: "custom preferred match"} | _] =
+               discovery.candidates
+    end
+
+    test "deterministic scorer can skip invalid candidates" do
+      assert {:skip, :missing_url} =
+               DeterministicScorer.score_candidate(%Candidate{}, %{goal: "api"}, [])
     end
   end
 

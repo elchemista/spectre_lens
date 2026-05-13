@@ -59,9 +59,8 @@ defmodule SpectreLens.Page do
 
       result =
         with {:ok, _} <- Connection.send_command(conn, "Page.navigate", %{url: url}, timeout, sid),
-             {:ok, _} <- Connection.await_event(wait_ref, timeout),
-             :ok <- maybe_wait_for_usable_document(conn, sid, opts, timeout) do
-          :ok
+             {:ok, _} <- Connection.await_event(wait_ref, timeout) do
+          maybe_wait_for_usable_document(conn, sid, opts, timeout)
         end
 
       span_result(result)
@@ -666,23 +665,21 @@ defmodule SpectreLens.Page do
   defp do_wait_for_usable_document(conn, sid, interval, deadline, last_state \\ nil) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
-    cond do
-      remaining == 0 ->
-        {:error, {:empty_document_after_navigation, last_state || %{}}}
+    if remaining == 0 do
+      {:error, {:empty_document_after_navigation, last_state || %{}}}
+    else
+      case usable_document_state(conn, sid, min(remaining, 1_000)) do
+        {:ok, %{"usable" => true}} ->
+          :ok
 
-      true ->
-        case usable_document_state(conn, sid, min(remaining, 1_000)) do
-          {:ok, %{"usable" => true}} ->
-            :ok
+        {:ok, state} ->
+          Process.sleep(min(interval, remaining))
+          do_wait_for_usable_document(conn, sid, interval, deadline, state)
 
-          {:ok, state} ->
-            Process.sleep(min(interval, remaining))
-            do_wait_for_usable_document(conn, sid, interval, deadline, state)
-
-          {:error, reason} ->
-            Process.sleep(min(interval, remaining))
-            do_wait_for_usable_document(conn, sid, interval, deadline, %{error: inspect(reason)})
-        end
+        {:error, reason} ->
+          Process.sleep(min(interval, remaining))
+          do_wait_for_usable_document(conn, sid, interval, deadline, %{error: inspect(reason)})
+      end
     end
   end
 
