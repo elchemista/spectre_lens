@@ -30,7 +30,7 @@ dependency while developing:
 ```elixir
 def deps do
   [
-    {:spectre_lens, path: "../spectre_lens"}
+    {:spectre_lens, github: "elchemista/spectre_lens"}
   ]
 end
 ```
