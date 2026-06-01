@@ -11,7 +11,7 @@ defmodule SpectreLens.Page do
   @default_timeout 15_000
   @navigation_timeout 30_000
 
-  @doc false
+  @doc "Creates a new browser target and attaches the protocol domains used by Spectre Lens."
   @spec new(pid(), keyword()) :: {:ok, Tab.t()} | {:error, term()}
   def new(conn, opts \\ []) when is_pid(conn) do
     target_url = opts[:url] || "about:blank"
@@ -367,7 +367,7 @@ defmodule SpectreLens.Page do
     end)
   end
 
-  @doc false
+  @doc "Restores cookies and origin storage into the tab's browser context."
   @spec restore_session(Tab.t(), Session.t() | map(), keyword()) :: :ok | {:error, term()}
   def restore_session(tab, session, opts \\ [])
 
@@ -384,7 +384,7 @@ defmodule SpectreLens.Page do
     end
   end
 
-  @doc false
+  @doc "Captures cookies and current-origin storage as a portable session snapshot."
   @spec session_snapshot(Tab.t(), keyword()) :: {:ok, Session.t()} | {:error, term()}
   def session_snapshot(tab, opts \\ [])
 
@@ -668,18 +668,24 @@ defmodule SpectreLens.Page do
     if remaining == 0 do
       {:error, {:empty_document_after_navigation, last_state || %{}}}
     else
-      case usable_document_state(conn, sid, min(remaining, 1_000)) do
-        {:ok, %{"usable" => true}} ->
-          :ok
+      wait_for_document_state(conn, sid, interval, deadline, remaining)
+    end
+  end
 
-        {:ok, state} ->
-          Process.sleep(min(interval, remaining))
-          do_wait_for_usable_document(conn, sid, interval, deadline, state)
+  @spec wait_for_document_state(pid(), binary(), non_neg_integer(), integer(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  defp wait_for_document_state(conn, sid, interval, deadline, remaining) do
+    case usable_document_state(conn, sid, min(remaining, 1_000)) do
+      {:ok, %{"usable" => true}} ->
+        :ok
 
-        {:error, reason} ->
-          Process.sleep(min(interval, remaining))
-          do_wait_for_usable_document(conn, sid, interval, deadline, %{error: inspect(reason)})
-      end
+      {:ok, state} ->
+        Process.sleep(min(interval, remaining))
+        do_wait_for_usable_document(conn, sid, interval, deadline, state)
+
+      {:error, reason} ->
+        Process.sleep(min(interval, remaining))
+        do_wait_for_usable_document(conn, sid, interval, deadline, %{error: inspect(reason)})
     end
   end
 

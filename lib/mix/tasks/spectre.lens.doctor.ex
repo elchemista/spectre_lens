@@ -9,7 +9,7 @@ defmodule Mix.Tasks.Spectre.Lens.Doctor do
 
   @shortdoc "Inspect Spectre Lens and Lightpanda setup"
 
-  @impl true
+  @impl Mix.Task
   def run(_argv) do
     Mix.Task.run("app.start")
     SpectreLens.doctor() |> Jason.encode!(pretty: true) |> Mix.shell().info()

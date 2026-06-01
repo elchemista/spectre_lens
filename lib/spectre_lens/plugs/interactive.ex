@@ -1,5 +1,11 @@
 defmodule SpectreLens.Plugs.Interactive do
-  @moduledoc false
+  @moduledoc """
+  Adds non-link interactive controls to the current page view.
+
+  Links are filtered out here because navigation targets are collected by
+  `SpectreLens.Plugs.Links`, giving agents separate lists for controls and
+  destinations.
+  """
 
   alias SpectreLens.{Context, Plug}
   alias SpectreLens.MapHelpers
@@ -7,7 +13,7 @@ defmodule SpectreLens.Plugs.Interactive do
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(context, opts) do
     if Helpers.included?(context, :interactive) do

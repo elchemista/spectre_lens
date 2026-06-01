@@ -1,5 +1,11 @@
 defmodule SpectreLens.ActionRef do
-  @moduledoc "Stable-ish action handle generated from links, forms, and interactive elements."
+  @moduledoc """
+  Stable-ish action handle generated from links, forms, and interactive elements.
+
+  Action refs are intentionally adapter-neutral. A caller can pass one back to
+  `SpectreLens.act/3` without caring whether the original page element came
+  from CDP, Lightpanda's `LP.*` APIs, or another future driver.
+  """
 
   @type kind :: :link | :button | :input | :select | :textarea | :form | :custom
 

@@ -1,5 +1,11 @@
 defmodule SpectreLens.View do
-  @moduledoc "Agent-readable projection of the current page state."
+  @moduledoc """
+  Agent-readable projection of the current page state.
+
+  Views are the main boundary object returned by `SpectreLens.look/2`. Missing
+  optional projections remain `nil` or empty lists, while recoverable projection
+  failures are collected in `warnings` or `errors`.
+  """
 
   @type t :: %__MODULE__{
           url: binary() | nil,

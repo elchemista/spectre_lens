@@ -1,11 +1,17 @@
 defmodule SpectreLens.Plugs.ActionRefs do
-  @moduledoc false
+  @moduledoc """
+  Builds stable-ish action references from view projections.
+
+  The plug translates raw browser maps into `%SpectreLens.ActionRef{}` structs
+  so agents can choose actions without knowing each adapter's external field
+  names.
+  """
 
   alias SpectreLens.{ActionRef, Context, MapHelpers, Plug}
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(context, _opts) do
     actions =
@@ -19,15 +25,15 @@ defmodule SpectreLens.Plugs.ActionRefs do
     put_in(context.view.actions, actions)
   end
 
-  @doc false
+  @doc "Builds action references from browser-reported interactive controls."
   @spec build_from_interactive([map()] | nil) :: [ActionRef.t()]
   def build_from_interactive(elements), do: interactive_actions(elements)
 
-  @doc false
+  @doc "Builds action references from extracted form and field maps."
   @spec build_from_forms([map()] | nil) :: [ActionRef.t()]
   def build_from_forms(forms), do: form_actions(forms)
 
-  @doc false
+  @doc "Builds action references from extracted link maps."
   @spec build_from_links([map()] | nil) :: [ActionRef.t()]
   def build_from_links(links), do: link_actions(links)
 

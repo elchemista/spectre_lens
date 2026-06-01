@@ -116,7 +116,7 @@ defmodule SpectreLens.CDP.Connection do
     |> await_event(timeout)
   end
 
-  @impl true
+  @impl WebSockex
   def handle_cast({:send_command, method, params, session_id, from, ref}, state) do
     id = state.id
 
@@ -129,14 +129,14 @@ defmodule SpectreLens.CDP.Connection do
     {:reply, {:text, message}, %{state | id: id + 1, pending: pending}}
   end
 
-  @impl true
+  @impl WebSockex
   def handle_cast({:wait_event, method, session_id, from, ref}, state) do
     key = {method, session_id}
     event_waiters = Map.update(state.event_waiters, key, [{from, ref}], &[{from, ref} | &1])
     {:ok, %{state | event_waiters: event_waiters}}
   end
 
-  @impl true
+  @impl WebSockex
   def handle_frame({:text, data}, state) do
     case Jason.decode(data) do
       {:ok, %{"id" => id} = message} ->
@@ -156,7 +156,7 @@ defmodule SpectreLens.CDP.Connection do
     end
   end
 
-  @impl true
+  @impl WebSockex
   def handle_frame(_frame, state), do: {:ok, state}
 
   @spec initial_state() :: map()

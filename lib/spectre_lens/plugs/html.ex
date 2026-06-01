@@ -1,12 +1,17 @@
 defmodule SpectreLens.Plugs.Html do
-  @moduledoc false
+  @moduledoc """
+  Adds rendered HTML when callers explicitly request `:html`.
+
+  HTML is intentionally opt-in because it can be large compared with Markdown
+  and semantic projections.
+  """
 
   alias SpectreLens.{Context, Plug}
   alias SpectreLens.Plugs.Helpers
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(context, opts) do
     if Helpers.included?(context, :html) do

@@ -1,12 +1,18 @@
 defmodule SpectreLens.Plugs.SemanticTree do
-  @moduledoc false
+  @moduledoc """
+  Adds semantic tree projections when requested.
+
+  `:semantic_tree` stores the JSON-like tree and `:semantic_text` stores the
+  text representation. Both are requested independently to keep view payloads
+  small.
+  """
 
   alias SpectreLens.{Context, Plug}
   alias SpectreLens.Plugs.Helpers
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(context, opts) do
     context

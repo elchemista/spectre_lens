@@ -1,5 +1,10 @@
 defmodule SpectreLens.Plugs.Links do
-  @moduledoc false
+  @moduledoc """
+  Adds deduplicated navigation links to a page view.
+
+  Links are keyed by `href` when available so repeated navigation labels do not
+  flood the agent-facing view.
+  """
 
   alias SpectreLens.{Context, Plug}
   alias SpectreLens.MapHelpers
@@ -7,7 +12,7 @@ defmodule SpectreLens.Plugs.Links do
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(context, opts) do
     if Helpers.included?(context, :links) do
