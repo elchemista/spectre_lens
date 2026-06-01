@@ -10,6 +10,7 @@ defmodule SpectreLens do
   alias SpectreLens.{
     ActionResolver,
     Context,
+    Discovery,
     LlmsTxt,
     Outline,
     PlugPipeline,
@@ -238,6 +239,67 @@ defmodule SpectreLens do
           with {:ok, page_map} <- SpectreLens.Protocol.page_map(tab, Outline.page_map_opts(opts)) do
             {:ok, Outline.from_regions(page_map.regions, opts)}
           end
+        after
+          SpectreLens.Protocol.close_tab(tab)
+        end
+      else
+        :error -> {:error, :missing_url}
+        {:error, _} = error -> error
+      end
+    end)
+  end
+
+  @doc """
+  Discovers a small, goal-scoped navigation frontier for Elixir agents.
+
+  Discovery is observation-only. It visits a capped same-origin frontier,
+  scores links against `:goal`, and returns compact context plus ranked
+  candidates. Pass `scorer: MyScorer` or `scorer: {MyScorer, opts}` to plug in
+  a custom scorer implementing `SpectreLens.Discovery.Scorer`.
+  """
+  @spec discover(Tab.t() | Runtime.t() | pid() | binary() | keyword(), keyword()) ::
+          {:ok, Discovery.t()} | {:error, term()}
+  def discover(target, opts \\ [])
+
+  def discover(opts, []) when is_list(opts) do
+    opts = normalize_opts(opts)
+
+    SpectreLens.Errors.safe(:discover, fn ->
+      with {:ok, _url} <- Keyword.fetch(opts, :url),
+           {:ok, runtime} <- open(runtime_opts(opts)) do
+        try do
+          discover(runtime, opts)
+        after
+          close(runtime)
+        end
+      else
+        :error -> {:error, :missing_url}
+        {:error, _} = error -> error
+      end
+    end)
+  end
+
+  def discover(url, opts) when is_binary(url) do
+    opts
+    |> Keyword.put(:url, url)
+    |> discover([])
+  end
+
+  def discover(%Tab{} = tab, opts) do
+    opts = normalize_opts(opts)
+    SpectreLens.Errors.safe(:discover, fn -> Discovery.run(tab, opts) end)
+  end
+
+  def discover(%Runtime{} = runtime, opts), do: discover(runtime.pid, opts)
+
+  def discover(runtime, opts) when is_pid(runtime) do
+    opts = normalize_opts(opts)
+
+    SpectreLens.Errors.safe(:discover, fn ->
+      with {:ok, url} <- Keyword.fetch(opts, :url),
+           {:ok, tab} <- Runtime.new_tab(runtime, url: url) do
+        try do
+          Discovery.run(tab, opts)
         after
           SpectreLens.Protocol.close_tab(tab)
         end

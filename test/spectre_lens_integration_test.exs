@@ -264,6 +264,175 @@ defmodule SpectreLensIntegrationTest do
     end
   end
 
+  test "exports screenshot image and pdf from a local rendered page" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+
+    {:ok, server} =
+      start_http_server("""
+      <html>
+        <head>
+          <style>
+            body { margin: 0; font-family: sans-serif; }
+            main { min-height: 640px; padding: 48px; background: #f7fbff; color: #172033; }
+            .panel { border: 4px solid #1d4ed8; padding: 24px; width: 420px; background: white; }
+            h1 { color: #be123c; }
+          </style>
+        </head>
+        <body>
+          <main>
+            <section class="panel">
+              <h1>Export fixture</h1>
+              <p>This page verifies screenshot and PDF export paths.</p>
+            </section>
+          </main>
+        </body>
+      </html>
+      """)
+
+    assert {:ok, lens} = SpectreLens.open(instances: 1)
+
+    try do
+      url = "http://127.0.0.1:#{server.port}/"
+      assert {:ok, tab} = SpectreLens.new_tab(lens, url: url, timeout: @real_content_timeout)
+
+      assert {:ok, <<137, 80, 78, 71, 13, 10, 26, 10, _rest::binary>> = png} =
+               SpectreLens.export(tab, :screenshot, timeout: @real_content_timeout)
+
+      assert byte_size(png) > 500
+
+      case SpectreLens.export(tab, :pdf, timeout: @real_content_timeout) do
+        {:ok, <<"%PDF", _rest::binary>> = pdf} ->
+          assert byte_size(pdf) > 500
+
+        {:error, %SpectreLens.UnsupportedError{feature: :pdf} = error} ->
+          assert SpectreLens.Errors.hint(error) =~ "Page.printToPDF"
+      end
+    after
+      SpectreLens.close(lens)
+      stop_http_server(server)
+    end
+  end
+
+  test "discovers goal-scoped candidates on a local multi-page site" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+
+    noisy_links =
+      Enum.map_join(1..40, "\n", fn index ->
+        ~s(<a href="/products/#{index}">Product #{index}</a>)
+      end)
+
+    {:ok, server} =
+      start_http_server(%{
+        "/" => """
+        <html>
+          <body>
+            <nav>
+              #{noisy_links}
+              <a id="api" href="/docs/api">API reference</a>
+              <a href="/pricing">Pricing</a>
+              <a href="mailto:hello@example.com">Email</a>
+            </nav>
+            <main>
+              <h1>Developer portal</h1>
+              <p>Find API reference, pricing, and account documentation.</p>
+              <form id="search"><input name="q" placeholder="Search docs"></form>
+            </main>
+          </body>
+        </html>
+        """,
+        "/docs/api" => """
+        <html><body><main><h1>API Reference</h1><p>Authentication API and SDK docs.</p></main></body></html>
+        """,
+        "/pricing" => """
+        <html><body><main><h1>Pricing</h1><p>Plans and billing.</p></main></body></html>
+        """
+      })
+
+    assert {:ok, lens} = SpectreLens.open(instances: 1)
+
+    try do
+      root = "http://127.0.0.1:#{server.port}/"
+      assert {:ok, tab} = SpectreLens.new_tab(lens, url: root, timeout: @real_content_timeout)
+
+      assert {:ok, discovery} =
+               SpectreLens.discover(tab,
+                 goal: "api reference",
+                 max_depth: 1,
+                 max_pages: 3,
+                 max_links_per_page: 8,
+                 timeout: @real_content_timeout
+               )
+
+      assert discovery.text =~ "Goal: api reference"
+      assert Enum.any?(discovery.candidates, &String.ends_with?(&1.url, "/docs/api"))
+      assert Enum.any?(discovery.visited, &String.ends_with?(&1.url, "/docs/api"))
+      assert Enum.any?(discovery.forms, &(Map.get(&1, :source_url) == root))
+      assert Enum.any?(discovery.warnings, &match?({:links_truncated, ^root, _, 8}, &1))
+      assert Enum.any?(discovery.candidates, &(&1.selector == "#api"))
+      refute Enum.any?(discovery.candidates, &String.starts_with?(&1.url, "mailto:"))
+      assert Enum.any?(discovery.candidates, &String.contains?(&1.reason || "", "api"))
+    after
+      SpectreLens.close(lens)
+      stop_http_server(server)
+    end
+  end
+
+  test "discovers goal-scoped candidates through the one-off URL API" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+
+    {:ok, server} =
+      start_http_server(%{
+        "/" => """
+        <html>
+          <body>
+            <header><h1>Knowledge base</h1></header>
+            <nav>
+              <a href="/help/billing">Billing help</a>
+              <a href="/help/api-keys">API keys</a>
+              <a href="/company/legal">Legal</a>
+              <a href="https://external.example/help/api-keys">External API keys</a>
+            </nav>
+            <main>
+              <form id="kb-search"><input name="q" placeholder="Search help"></form>
+            </main>
+          </body>
+        </html>
+        """,
+        "/help/api-keys" => """
+        <html><body><main><h1>API keys</h1><p>Create and rotate API keys.</p></main></body></html>
+        """,
+        "/help/billing" => """
+        <html><body><main><h1>Billing help</h1><p>Invoices and plans.</p></main></body></html>
+        """,
+        "/company/legal" => """
+        <html><body><main><h1>Legal</h1><p>Terms and privacy.</p></main></body></html>
+        """
+      })
+
+    try do
+      root = "http://127.0.0.1:#{server.port}/"
+
+      assert {:ok, discovery} =
+               SpectreLens.discover(
+                 url: root,
+                 goal: "api keys",
+                 max_depth: 1,
+                 max_pages: 3,
+                 timeout: @real_content_timeout
+               )
+
+      assert discovery.root_url == root
+      assert discovery.text =~ "Goal: api keys"
+      assert [%{url: best_url} | _] = discovery.candidates
+      assert String.ends_with?(best_url, "/help/api-keys")
+      assert Enum.any?(discovery.visited, &String.ends_with?(&1.url, "/help/api-keys"))
+      refute Enum.any?(discovery.candidates, &String.contains?(&1.url, "external.example"))
+      assert Enum.any?(discovery.forms, &(Map.get(&1, :source_url) == root))
+    after
+      stop_http_server(server)
+    end
+  end
+
   defp browser_storage(tab) do
     assert {:ok, %{"result" => %{"value" => storage}}} =
              SpectreLens.cdp(tab, "Runtime.evaluate", %{
@@ -357,22 +526,37 @@ defmodule SpectreLensIntegrationTest do
     :ok
   end
 
-  defp http_server_loop(socket, body) do
+  defp http_server_loop(socket, routes) do
     case :gen_tcp.accept(socket) do
       {:ok, client} ->
-        _ = :gen_tcp.recv(client, 0, 1_000)
-        response = http_response(body)
+        {:ok, request} = :gen_tcp.recv(client, 0, 1_000)
+        response = http_response(response_body(routes, request))
         :ok = :gen_tcp.send(client, response)
         :ok = :gen_tcp.close(client)
-        http_server_loop(socket, body)
+        http_server_loop(socket, routes)
 
       {:error, :closed} ->
         :ok
 
       {:error, _reason} ->
-        http_server_loop(socket, body)
+        http_server_loop(socket, routes)
     end
   end
+
+  defp response_body(routes, request) when is_map(routes) do
+    path =
+      request
+      |> String.split("\r\n", parts: 2)
+      |> List.first()
+      |> String.split(" ")
+      |> Enum.at(1, "/")
+      |> URI.parse()
+      |> Map.get(:path)
+
+    Map.get(routes, path, "<html><body>not found</body></html>")
+  end
+
+  defp response_body(body, _request), do: body
 
   defp http_response(body) do
     [

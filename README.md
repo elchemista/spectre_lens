@@ -14,6 +14,7 @@ the same protocol later.
 - Extract agent-readable views: markdown, HTML, semantic tree, forms, links,
   structured data, interactive elements, and action refs.
 - Describe page layout in words with `zoom_out/2`, `zoom_in/3`, and `unfocus/2`.
+- Run goal-scoped site discovery with deterministic or custom pluggable scoring.
 - Export screenshots, HTML, markdown, and PDF when the browser supports it.
 - Discover and parse `llms.txt` / `llms-full.txt` context for agents.
 - Auto-include `llms.txt` context in `SpectreLens.look/2` when pages expose it
@@ -29,7 +30,7 @@ dependency while developing:
 ```elixir
 def deps do
   [
-    {:spectre_lens, path: "../spectre_lens"}
+    {:spectre_lens, github: "elchemista/spectre_lens"}
   ]
 end
 ```
@@ -66,6 +67,10 @@ view.llms_context
 map.description
 
 {:ok, focused} = SpectreLens.zoom_in(tab, "#contact")
+
+{:ok, discovery} = SpectreLens.discover(tab, goal: "api reference")
+discovery.text
+discovery.candidates
 
 :ok = SpectreLens.act(tab, {:fill, ref: "#q", value: "spectre"})
 :ok = SpectreLens.act(tab, {:click, ref: "button[type=submit]"})
@@ -335,6 +340,52 @@ temporary runtime:
 
 ```elixir
 {:ok, outline} = SpectreLens.outline(url: "https://elchemista.com", detailed: true)
+```
+
+## Goal-Scoped Discovery
+
+Use `discover/2` when an agent has a goal but should not crawl an entire site.
+Spectre Lens visits a small same-origin frontier, ranks links against the goal,
+and returns compact context plus structured candidates:
+
+```elixir
+{:ok, discovery} =
+  SpectreLens.discover(tab,
+    goal: "api reference",
+    max_depth: 2,
+    max_pages: 8,
+    max_links_per_page: 40,
+    max_candidates: 20
+  )
+
+discovery.text
+discovery.visited
+discovery.candidates
+discovery.forms
+```
+
+The default scorer is deterministic and dependency-free. To plug in an LLM or
+domain-specific ranker later, implement `SpectreLens.Discovery.Scorer`:
+
+```elixir
+defmodule MyApp.LlmScorer do
+  @behaviour SpectreLens.Discovery.Scorer
+
+  def score_candidate(candidate, context, opts) do
+    # Use context.goal, context.page, context.outline, context.view, etc.
+    {:ok, %{candidate | score: 10.0, reason: "ranked by custom scorer"}}
+  end
+
+  def rank_candidates(candidates, _context, _opts) do
+    {:ok, Enum.sort_by(candidates, & &1.score, :desc)}
+  end
+end
+
+{:ok, discovery} =
+  SpectreLens.discover(tab,
+    goal: "api reference",
+    scorer: {MyApp.LlmScorer, model: "my-model"}
+  )
 ```
 
 ## Actions
