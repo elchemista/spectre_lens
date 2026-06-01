@@ -17,7 +17,7 @@ defmodule SpectreLens.Outline do
 
   defstruct text: "", sections: [], detailed?: false
 
-  @doc false
+  @doc "Builds an outline from page-map regions."
   @spec from_regions([Region.t()], keyword()) :: t()
   def from_regions(regions, opts) do
     detailed? = detailed?(opts)
@@ -35,7 +35,7 @@ defmodule SpectreLens.Outline do
     }
   end
 
-  @doc false
+  @doc "Returns page-map options suitable for outline generation."
   @spec page_map_opts(keyword()) :: keyword()
   def page_map_opts(opts) do
     opts

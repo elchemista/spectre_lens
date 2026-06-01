@@ -1,12 +1,17 @@
 defmodule SpectreLens.Plugs.EmptyViewDiagnostics do
-  @moduledoc false
+  @moduledoc """
+  Adds diagnostics when requested page projections come back empty.
+
+  Empty rendered output is usually an adapter or page-readiness problem. The
+  diagnostic map keeps those details visible without raising from `look/2`.
+  """
 
   alias SpectreLens.{Context, Plug}
   alias SpectreLens.Plugs.Helpers
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(%Context{} = context, _opts) do
     if empty_requested_projection?(context) do
@@ -18,14 +23,19 @@ defmodule SpectreLens.Plugs.EmptyViewDiagnostics do
 
   @spec empty_requested_projection?(Context.t()) :: boolean()
   defp empty_requested_projection?(%Context{include: include, view: view}) do
+    projection_requested?(include) and empty_view_content?(view)
+  end
+
+  @spec projection_requested?([atom()]) :: boolean()
+  defp projection_requested?(include) do
     requested = MapSet.new(include)
+    MapSet.member?(requested, :markdown) or MapSet.member?(requested, :semantic_tree)
+  end
 
-    projection_requested? =
-      MapSet.member?(requested, :markdown) or MapSet.member?(requested, :semantic_tree)
-
-    projection_requested? and blank?(view.markdown) and blank_tree?(view.semantic_tree) and
-      Enum.empty?(view.interactive || []) and Enum.empty?(view.forms || []) and
-      Enum.empty?(view.links || [])
+  @spec empty_view_content?(SpectreLens.View.t()) :: boolean()
+  defp empty_view_content?(view) do
+    blank?(view.markdown) and blank_tree?(view.semantic_tree) and
+      Enum.empty?(view.interactive) and Enum.empty?(view.forms) and Enum.empty?(view.links)
   end
 
   @spec diagnostic_details(Context.t()) :: map()
@@ -35,9 +45,9 @@ defmodule SpectreLens.Plugs.EmptyViewDiagnostics do
       title: view.title,
       markdown_size: byte_size(view.markdown || ""),
       semantic_children: semantic_child_count(view.semantic_tree),
-      interactive_count: length(view.interactive || []),
-      form_count: length(view.forms || []),
-      link_count: length(view.links || [])
+      interactive_count: length(view.interactive),
+      form_count: length(view.forms),
+      link_count: length(view.links)
     }
   end
 

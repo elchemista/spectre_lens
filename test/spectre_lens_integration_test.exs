@@ -112,8 +112,8 @@ defmodule SpectreLensIntegrationTest do
       assert view.url =~ "paginebianche.it"
       assert view.title =~ "PagineBianche"
       assert byte_size(view.markdown) > 500
-      assert length(view.links) > 0
-      assert length(view.interactive) > 0
+      refute Enum.empty?(view.links)
+      refute Enum.empty?(view.interactive)
       assert semantic_child_count(view.semantic_tree) > 0
       refute Enum.any?(view.errors, &match?({:empty_page_projection, _}, &1))
     after
@@ -291,8 +291,8 @@ defmodule SpectreLensIntegrationTest do
     assert is_binary(view.title)
     assert byte_size(view.title) > 0
     assert byte_size(view.markdown) > 500
-    assert length(view.links) > 0
-    assert length(view.interactive) > 0
+    refute Enum.empty?(view.links)
+    refute Enum.empty?(view.interactive)
     assert semantic_child_count(view.semantic_tree) > 0
   end
 
@@ -301,11 +301,11 @@ defmodule SpectreLensIntegrationTest do
              SpectreLens.outline(tab, detailed: true, timeout: @real_content_timeout)
 
     assert byte_size(outline.text) > 0
-    assert length(outline.sections) > 0
+    refute Enum.empty?(outline.sections)
 
     assert {:ok, page_map} = SpectreLens.zoom_out(tab, timeout: @real_content_timeout)
     assert byte_size(page_map.description) > 0
-    assert length(page_map.regions) > 0
+    refute Enum.empty?(page_map.regions)
 
     selector =
       outline.sections
@@ -316,7 +316,7 @@ defmodule SpectreLensIntegrationTest do
 
     assert {:ok, focused} = SpectreLens.zoom_in(tab, selector, timeout: @real_content_timeout)
     assert byte_size(focused.description) > 0
-    assert length(focused.regions) > 0
+    refute Enum.empty?(focused.regions)
 
     assert {:ok, markdown} = SpectreLens.export(tab, :markdown, timeout: @real_content_timeout)
     assert byte_size(markdown) > 500

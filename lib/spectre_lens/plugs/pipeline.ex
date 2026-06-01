@@ -1,5 +1,15 @@
 defmodule SpectreLens.PlugPipeline do
-  @moduledoc false
+  @moduledoc """
+  Runs the `SpectreLens.look/2` projection pipeline.
+
+  The pipeline accepts built-in plugs, application-configured plugs, and
+  per-call plugs. Each plug receives the same `%SpectreLens.Context{}` and can
+  continue, halt with the current context, or return a tagged error.
+
+  ## Examples
+
+      SpectreLens.PlugPipeline.run(%SpectreLens.Context{}, plugs: [])
+  """
 
   alias SpectreLens.Context
 
@@ -7,7 +17,7 @@ defmodule SpectreLens.PlugPipeline do
   @type run_result :: {:ok, Context.t()} | {:error, term()}
   @typep plug_result :: {:cont, Context.t()} | {:halt, Context.t()} | {:error, term()}
 
-  @doc false
+  @doc "Runs configured plugs and returns the final context or a tagged error."
   @spec run(Context.t(), keyword()) :: run_result()
   def run(%Context{} = context, opts \\ []) do
     opts

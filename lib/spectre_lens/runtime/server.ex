@@ -98,10 +98,10 @@ defmodule SpectreLens.Runtime do
 
   def save_session(%Tab{}, _key, _opts), do: {:error, :missing_runtime}
 
-  @doc false
+  @doc "Marks a tab as closed so the runtime can reuse instance capacity."
   def release_tab(pid, tab) when is_pid(pid), do: GenServer.cast(pid, {:release_tab, tab})
 
-  @impl true
+  @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
     instance_count = opts[:instances] || 1
@@ -120,7 +120,7 @@ defmodule SpectreLens.Runtime do
     end
   end
 
-  @impl true
+  @impl GenServer
   def handle_call({:new_tab, opts}, _from, state) do
     with {:ok, opts} <- prepare_session_opts(state.session_table, opts),
          {:ok, instance} <- available_instance(state, opts),
@@ -172,7 +172,7 @@ defmodule SpectreLens.Runtime do
     {:reply, result, state}
   end
 
-  @impl true
+  @impl GenServer
   def handle_cast({:release_tab, tab}, state) do
     Telemetry.emit([:spectre_lens, :runtime, :tab_released], %{}, %{
       instance_id: tab.instance_id,
@@ -183,14 +183,14 @@ defmodule SpectreLens.Runtime do
      %{state | instances: bump_instance_counts(state.instances, tab.instance_id, tab, -1)}}
   end
 
-  @impl true
+  @impl GenServer
   def handle_info({stream, _os_pid, _data}, state) when stream in [:stdout, :stderr] do
     {:noreply, state}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  @impl true
+  @impl GenServer
   def terminate(_reason, state) do
     cleanup(state.instances)
     :ok

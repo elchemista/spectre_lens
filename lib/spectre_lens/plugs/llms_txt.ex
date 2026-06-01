@@ -1,12 +1,18 @@
 defmodule SpectreLens.Plugs.LlmsTxt do
-  @moduledoc false
+  @moduledoc """
+  Discovers page-advertised `llms.txt` context for a view.
+
+  Discovery is best-effort by default: failures become warnings unless callers
+  explicitly include `:llms`, where missing context is treated as a requested
+  projection error.
+  """
 
   alias SpectreLens.{Context, LlmsTxt, Plug}
   alias SpectreLens.Plugs.Helpers
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(%Context{} = context, opts) do
     if enabled?(context, opts) do

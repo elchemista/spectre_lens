@@ -1,11 +1,16 @@
 defmodule SpectreLens.Plugs.Hash do
-  @moduledoc false
+  @moduledoc """
+  Computes a stable hash for the agent-facing view projection.
+
+  Watchers use this hash to detect meaningful page changes without comparing
+  full nested view structs.
+  """
 
   alias SpectreLens.{Context, Plug}
 
   @behaviour Plug
 
-  @doc false
+  @impl Plug
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(context, _opts) do
     projection =

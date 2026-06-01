@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Spectre.Lens.Install do
 
   @switches [channel: :string, out: :string, force: :boolean]
 
-  @impl true
+  @impl Mix.Task
   def run(argv) do
     Mix.Task.run("app.start")
     {opts, _args, invalid} = OptionParser.parse(argv, strict: @switches)
