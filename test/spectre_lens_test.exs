@@ -398,6 +398,40 @@ defmodule SpectreLensTest do
 
       assert_receive {:fetched, "https://cdn.example.net/llms.txt"}
     end
+
+    test "page-advertised llms.txt redirects stay same-origin" do
+      redirect_target = "http://127.0.0.1:9/llms.txt"
+
+      response =
+        "HTTP/1.1 302 Found\r\n" <>
+          "Location: #{redirect_target}\r\n" <>
+          "Content-Length: 0\r\n" <>
+          "Connection: close\r\n\r\n"
+
+      port = start_http_server(response)
+      page_url = "http://127.0.0.1:#{port}/page"
+
+      assert {:error,
+              {:llms_txt_not_found,
+               {:llms_txt_not_found,
+                {:cross_origin_llms_redirect, ^redirect_target},
+                _index_candidates}, _page_candidates}} =
+               LlmsTxt.discover_from_page(
+                 page_url,
+                 [%{"href" => "/llms.txt", "rel" => "llms.txt"}],
+                 llms_headers?: false,
+                 network_policy: :any
+               )
+    end
+
+    test "rejects an invalid redirect limit before issuing a request" do
+      assert {:error,
+              {:llms_txt_not_found, {:invalid_max_redirects, -1}, _candidates}} =
+               LlmsTxt.discover("https://example.com/llms.txt",
+                 max_redirects: -1,
+                 network_policy: :any
+               )
+    end
   end
 
   describe "plug pipeline" do
@@ -1500,6 +1534,31 @@ defmodule SpectreLensTest do
       assert {:error, %ConnectionError{}} =
                Connection.open("http://127.0.0.1:1")
     end
+  end
+
+  defp start_http_server(response) do
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
+
+    {:ok, {_address, port}} = :inet.sockname(listener)
+
+    {:ok, server} =
+      Task.start(fn ->
+        with {:ok, socket} <- :gen_tcp.accept(listener),
+             {:ok, _request} <- :gen_tcp.recv(socket, 0, 5_000) do
+          :ok = :gen_tcp.send(socket, response)
+          :gen_tcp.close(socket)
+        end
+
+        :gen_tcp.close(listener)
+      end)
+
+    on_exit(fn ->
+      :gen_tcp.close(listener)
+      if Process.alive?(server), do: Process.exit(server, :kill)
+    end)
+
+    port
   end
 
   defp connection_state do

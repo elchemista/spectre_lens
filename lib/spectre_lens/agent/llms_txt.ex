@@ -70,6 +70,7 @@ defmodule SpectreLens.LlmsTxt do
   Options:
     * `:full?` - also fetch `llms-full.txt` / `llms-ctx-full.txt`, default `false`
     * `:timeout` - HTTP timeout in milliseconds
+    * `:max_redirects` - maximum number of validated HTTP redirects, default `5`
     * `:max_bytes` - maximum accepted response body size
     * `:fetcher` - custom function `(url, opts -> {:ok, body} | {:error, reason})`
   """
@@ -170,15 +171,17 @@ defmodule SpectreLens.LlmsTxt do
 
   @spec do_discover_from_page(binary(), [page_link()], keyword()) :: {:ok, t()} | {:error, term()}
   defp do_discover_from_page(page_url, page_links, opts) do
+    page_opts = Keyword.put(opts, :llms_origin, page_url)
+
     candidates =
       page_url
-      |> metadata_candidates(page_links, opts)
-      |> Kernel.++(header_candidates(page_url, opts))
+      |> metadata_candidates(page_links, page_opts)
+      |> Kernel.++(header_candidates(page_url, page_opts))
       |> Enum.uniq()
 
     case candidates do
       [] -> {:error, {:llms_txt_not_found, :no_page_metadata_or_header, []}}
-      urls -> discover_first(urls, opts)
+      urls -> discover_first(urls, page_opts)
     end
   end
 
@@ -346,8 +349,13 @@ defmodule SpectreLens.LlmsTxt do
 
   @spec safe_request(:get | :head, binary(), keyword()) :: {:ok, Req.Response.t()} | {:error, term()}
   defp safe_request(method, url, opts) do
-    redirects = Keyword.get(opts, :max_redirects, 5)
-    do_safe_request(method, url, opts, redirects)
+    case Keyword.get(opts, :max_redirects, 5) do
+      redirects when is_integer(redirects) and redirects >= 0 ->
+        do_safe_request(method, url, opts, redirects)
+
+      redirects ->
+        {:error, {:invalid_max_redirects, redirects}}
+    end
   end
 
   @spec do_safe_request(:get | :head, binary(), keyword(), non_neg_integer()) ::
@@ -377,7 +385,8 @@ defmodule SpectreLens.LlmsTxt do
         {:error, :too_many_redirects}
 
       location = get_header(response.headers, "location") ->
-        with {:ok, redirected_url} <- resolve_redirect(url, location) do
+        with {:ok, redirected_url} <- resolve_redirect(url, location),
+             :ok <- validate_redirect_origin(redirected_url, opts) do
           do_safe_request(method, redirected_url, opts, redirects_left - 1)
         end
 
@@ -393,6 +402,22 @@ defmodule SpectreLens.LlmsTxt do
     {:ok, base_url |> URI.parse() |> URI.merge(location) |> URI.to_string()}
   rescue
     _ -> {:error, {:invalid_redirect, location}}
+  end
+
+  @spec validate_redirect_origin(binary(), keyword()) :: :ok | {:error, term()}
+  defp validate_redirect_origin(redirected_url, opts) do
+    origin = Keyword.get(opts, :llms_origin)
+
+    cond do
+      is_nil(origin) or Keyword.get(opts, :allow_cross_origin_llms?, false) ->
+        :ok
+
+      URLPolicy.same_origin?(origin, redirected_url) ->
+        :ok
+
+      true ->
+        {:error, {:cross_origin_llms_redirect, URLPolicy.sanitize(redirected_url)}}
+    end
   end
 
   @spec llms_url?(binary()) :: boolean()
