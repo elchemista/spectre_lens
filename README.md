@@ -17,10 +17,10 @@ the same protocol later.
 - Run goal-scoped site discovery with deterministic or custom pluggable scoring.
 - Export screenshots, HTML, markdown, and PDF when the browser supports it.
 - Discover and parse `llms.txt` / `llms-full.txt` context for agents.
-- Auto-include `llms.txt` context in `SpectreLens.look/2` when pages expose it
-  through metadata or HTTP `Link` headers.
+- Opt in to page-advertised `llms.txt` context through metadata or HTTP `Link`
+  headers.
 - Return agent-friendly errors instead of crashing at public API edges.
-- Emit telemetry events without attaching loggers or writing logs.
+- Emit payload-redacted telemetry events without attaching loggers or writing logs.
 
 ## Installation
 
@@ -42,6 +42,9 @@ mix spectre.lens.install --channel nightly --out ~/.local/bin --force
 mix spectre.lens.doctor
 ```
 
+Starting a runtime never downloads a browser binary. Provision Lightpanda
+yourself or run the installer task explicitly before `SpectreLens.open/1`.
+
 You can also point Spectre Lens at an existing binary:
 
 ```elixir
@@ -61,7 +64,9 @@ You can also point Spectre Lens at an existing binary:
 
 view.markdown
 view.actions
-view.llms_context
+view.trust # :untrusted
+
+{:ok, agent_context} = SpectreLens.agent_context(view)
 
 {:ok, map} = SpectreLens.zoom_out(tab)
 map.description
@@ -80,6 +85,42 @@ discovery.candidates
 
 :ok = SpectreLens.close(lens)
 ```
+
+## Network and Agent Safety
+
+The default `network_policy: :public` is designed for agent-controlled URLs. It
+allows only absolute HTTP(S) URLs, rejects embedded credentials and non-standard
+ports, resolves hostnames before use, and blocks loopback, private, link-local,
+reserved, multicast, and common cloud-metadata destinations. With the built-in
+CDP driver, request interception applies the same policy to redirects and page
+subrequests.
+
+Local development servers require an explicit opt-out:
+
+```elixir
+{:ok, lens} = SpectreLens.open(network_policy: :any)
+{:ok, tab} = SpectreLens.new_tab(lens, url: "http://127.0.0.1:4000")
+```
+
+You can extend the public-policy port allowlist with `allowed_ports: [80, 443,
+8443]`. `network_policy: :any` still rejects unsupported URL schemes and URL
+credentials.
+
+This library-level policy does not claim DNS-rebinding protection. Production
+deployments should also isolate browser egress and deny private/metadata ranges
+at the network layer.
+
+Top-level agent-facing projections (`View`, `LlmsTxt`, `Discovery`, `PageMap`,
+and `Outline`) carry `trust: :untrusted`. Use
+`SpectreLens.agent_context/2` before inserting a view, outline, page map, or
+discovery result into a model context; it adds a stable prompt-injection trust
+boundary. `llms_context/2` and discovery text are wrapped automatically. Raw
+projection fields remain available for parsing and storage.
+
+Form projections omit hidden inputs and all current/default values, including
+email, CSRF, checkbox, and selected-option values. Telemetry uses an allowlist
+of structural metadata and never includes CDP results, HTML, cookies, storage,
+screenshots, PDFs, or exception payloads.
 
 ## Lightpanda Runtime Model
 
@@ -170,9 +211,10 @@ session tabs are balanced across runtime instances.
   forms: [],
   links: [],
   structured_data: %{},
-  llms: %SpectreLens.LlmsTxt{},
-  llms_context: "# Full agent context...",
+  llms: nil,
+  llms_context: nil,
   actions: [],
+  trust: :untrusted,
   warnings: [],
   errors: []
 }
@@ -216,11 +258,13 @@ and receive the saved path instead:
 {:ok, "tmp/page.html"} = SpectreLens.export(tab, :html, to: "tmp/page.html")
 ```
 
-Disable automatic `llms.txt` discovery when you only want browser-rendered
-content:
+Page-advertised `llms.txt` discovery is disabled by default. Enable it
+explicitly:
 
 ```elixir
-SpectreLens.look(tab, llms?: false)
+SpectreLens.look(tab, llms?: true)
+# or
+SpectreLens.look(tab, include: [:markdown, :llms])
 ```
 
 ## llms.txt Support
@@ -247,6 +291,10 @@ Direct context:
 {:ok, markdown} = SpectreLens.llms_context("https://example.com/docs")
 ```
 
+The returned string is enclosed in an `UNTRUSTED WEB CONTENT` boundary. For
+non-agent parsing or storage, request the raw document explicitly with
+`raw?: true`.
+
 From an open tab:
 
 ```elixir
@@ -254,13 +302,17 @@ From an open tab:
 {:ok, markdown} = SpectreLens.llms_context(tab, prefer: :both)
 ```
 
-During `look/2`, Spectre Lens checks:
+When `look/2` is explicitly opted in, Spectre Lens checks:
 
 - `<link href="/llms.txt" rel="llms.txt">`
 - `<meta name="llms" content="/llms.txt">`
 - HTTP `Link` headers such as `</llms.txt>; rel="llms.txt"`
 - fallback candidate paths such as `/llms.txt`, `/llms-full.txt`, and
   `/llms-ctx-full.txt`
+
+Page-advertised URLs must be same-origin by default. Set
+`allow_cross_origin_llms?: true` only for sites whose external agent context you
+trust; the network policy still validates every fetch and redirect.
 
 Useful options:
 
@@ -507,7 +559,9 @@ end
 
 ## Telemetry
 
-Spectre Lens emits telemetry events but does not attach loggers.
+Spectre Lens emits telemetry events but does not attach loggers. Metadata is
+allowlisted and payload-redacted: stop events report `:outcome` and
+`:error_kind`, never the full command result or exception.
 
 Examples:
 
@@ -515,6 +569,7 @@ Examples:
 - `[:spectre_lens, :cdp, :command, :stop]`
 - `[:spectre_lens, :page, :operation, :stop]`
 - `[:spectre_lens, :agent, :llms, :stop]`
+- `[:spectre_lens, :network, :blocked]`
 - `[:spectre_lens, :watcher, :changed]`
 
 List all events:
