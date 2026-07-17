@@ -160,10 +160,18 @@ defmodule SpectreLens.Lightpanda do
 
   @spec do_start_instance(keyword()) :: {:ok, instance()} | {:error, term()}
   defp do_start_instance(opts) do
-    with {:ok, binary} <- ensure(opts),
+    with {:ok, binary} <- runtime_binary(opts),
          {:ok, port} <- resolve_port(opts),
          :ok <- ensure_exec_started() do
       start_resolved_instance(binary, port, opts)
+    end
+  end
+
+  @spec runtime_binary(keyword()) :: {:ok, binary()} | {:error, term()}
+  defp runtime_binary(opts) do
+    case detect(opts) do
+      {:ok, binary} -> {:ok, binary}
+      {:error, :not_found} -> {:error, {:lightpanda_not_found, default_path()}}
     end
   end
 
