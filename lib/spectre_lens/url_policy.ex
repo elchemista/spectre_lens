@@ -263,14 +263,38 @@ defmodule SpectreLens.URLPolicy do
   defp private_ipv6?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
 
   defp private_ipv6?({0, 0, 0, 0, 0, 0xFFFF, high, low}) do
-    private_ipv4?({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
+    embedded_private_ipv4?(high, low)
   end
 
-  defp private_ipv6?({first, second, _c, _d, _e, _f, _g, _h}) do
+  defp private_ipv6?({0, 0, 0, 0, 0, 0, high, low}) do
+    embedded_private_ipv4?(high, low)
+  end
+
+  defp private_ipv6?({0x0064, 0xFF9B, 0, 0, 0, 0, high, low}) do
+    embedded_private_ipv4?(high, low)
+  end
+
+  defp private_ipv6?({0x2002, high, low, _d, _e, _f, _g, _h}) do
+    embedded_private_ipv4?(high, low)
+  end
+
+  defp private_ipv6?({_a, _b, _c, _d, marker, 0x5EFE, high, low})
+       when marker in [0, 0x0200] do
+    embedded_private_ipv4?(high, low)
+  end
+
+  defp private_ipv6?({first, second, third, _d, _e, _f, _g, _h}) do
     (first &&& 0xFE00) == 0xFC00 or
       (first &&& 0xFFC0) == 0xFE80 or
       (first &&& 0xFF00) == 0xFF00 or
+      (first == 0x0064 and second == 0xFF9B and third == 1) or
+      (first == 0x2001 and second == 0) or
       (first == 0x2001 and second == 0x0DB8) or
       (first == 0x0100 and second == 0)
+  end
+
+  @spec embedded_private_ipv4?(non_neg_integer(), non_neg_integer()) :: boolean()
+  defp embedded_private_ipv4?(high, low) do
+    private_ipv4?({high >>> 8, high &&& 0xFF, low >>> 8, low &&& 0xFF})
   end
 end

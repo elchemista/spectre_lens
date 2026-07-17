@@ -311,8 +311,25 @@ defmodule SpectreLensTest do
       assert {:error, {:address_not_allowed, "fc00::1", _address}} =
                URLPolicy.validate("https://[fc00::1]/")
 
+      assert {:error, {:address_not_allowed, "::127.0.0.1", _address}} =
+               URLPolicy.validate("http://[::127.0.0.1]/")
+
+      assert {:error, {:address_not_allowed, "64:ff9b::7f00:1", _address}} =
+               URLPolicy.validate("http://[64:ff9b::7f00:1]/")
+
+      assert {:error, {:address_not_allowed, "2002:7f00:1::", _address}} =
+               URLPolicy.validate("http://[2002:7f00:1::]/")
+
       assert {:error, {:port_not_allowed, 8080}} =
                URLPolicy.validate("https://example.com:8080/")
+    end
+
+    test "allows transition addresses only when their embedded IPv4 address is public" do
+      assert URLPolicy.public_address?({0x0064, 0xFF9B, 0, 0, 0, 0, 0x5DB8, 0xD822})
+
+      refute URLPolicy.public_address?({0x0064, 0xFF9B, 0, 0, 0, 0, 0x0A00, 1})
+      refute URLPolicy.public_address?({0x2002, 0x7F00, 1, 0, 0, 0, 0, 0})
+      refute URLPolicy.public_address?({0x2001, 0, 0, 0, 0, 0, 0, 1})
     end
 
     test "rejects a hostname when any resolved address is private" do
