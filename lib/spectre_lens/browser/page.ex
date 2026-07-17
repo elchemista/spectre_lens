@@ -3,7 +3,7 @@ defmodule SpectreLens.Page do
   Page-level browser actions and agent-readable extraction helpers.
   """
 
-  alias SpectreLens.CDP.Connection
+  alias SpectreLens.CDP.{Connection, RequestGuard}
   alias SpectreLens.Session
   alias SpectreLens.Tab
   alias SpectreLens.Telemetry
@@ -17,9 +17,9 @@ defmodule SpectreLens.Page do
     target_url = opts[:url] || "about:blank"
 
     with {:ok, browser_context_id} <- prepare_browser_context(conn, opts) do
-      case open_target(conn, target_url, browser_context_id, opts) do
+      case open_target(conn, "about:blank", browser_context_id, opts) do
         {:ok, tab} ->
-          {:ok, tab}
+          finish_new_tab(tab, target_url, opts)
 
         {:error, reason} ->
           dispose_browser_context(conn, browser_context_id)
@@ -31,6 +31,7 @@ defmodule SpectreLens.Page do
   @doc "Closes a tab target."
   @spec close(Tab.t()) :: :ok | {:error, term()}
   def close(%Tab{runtime: runtime} = tab) do
+    RequestGuard.stop(tab.request_guard)
     target_result = close_target(tab)
     context_result = dispose_browser_context(tab.conn, tab.browser_context_id)
 
@@ -41,6 +42,39 @@ defmodule SpectreLens.Page do
       {:ok, {:error, _} = error} -> error
       _ -> :ok
     end
+  end
+
+  @spec finish_new_tab(Tab.t(), binary(), keyword()) :: {:ok, Tab.t()} | {:error, term()}
+  defp finish_new_tab(tab, target_url, opts) do
+    case RequestGuard.start(tab, opts) do
+      {:ok, guard} ->
+        guarded_tab = %{tab | request_guard: guard}
+
+        case maybe_navigate_new_tab(guarded_tab, target_url, opts) do
+          :ok ->
+            {:ok, guarded_tab}
+
+          {:error, reason} ->
+            cleanup_failed_tab(guarded_tab)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        cleanup_failed_tab(tab)
+        {:error, reason}
+    end
+  end
+
+  @spec maybe_navigate_new_tab(Tab.t(), binary(), keyword()) :: :ok | {:error, term()}
+  defp maybe_navigate_new_tab(_tab, "about:blank", _opts), do: :ok
+  defp maybe_navigate_new_tab(tab, url, opts), do: SpectreLens.Protocol.navigate(tab, url, opts)
+
+  @spec cleanup_failed_tab(Tab.t()) :: :ok
+  defp cleanup_failed_tab(tab) do
+    RequestGuard.stop(tab.request_guard)
+    close_target(tab)
+    dispose_browser_context(tab.conn, tab.browser_context_id)
+    :ok
   end
 
   @doc "Sends a raw CDP command to this tab session."
@@ -71,7 +105,7 @@ defmodule SpectreLens.Page do
   @spec evaluate(Tab.t(), binary(), keyword()) :: {:ok, term()} | {:error, term()}
   def evaluate(%Tab{} = tab, expression, opts \\ []) do
     timeout = opts[:timeout] || @default_timeout
-    metadata = %{session_id: tab.session_id, expression: String.slice(expression, 0, 80)}
+    metadata = %{session_id: tab.session_id}
 
     Telemetry.span([:spectre_lens, :page, :evaluate], metadata, fn ->
       result =
@@ -215,7 +249,9 @@ defmodule SpectreLens.Page do
       action: form.action || null,
       method: (form.method || 'get').toLowerCase(),
       selector: form.id ? `#${CSS.escape(form.id)}` : `form:nth-of-type(${formIndex + 1})`,
-      fields: Array.from(form.querySelectorAll('input, textarea, select, button')).map((el, index) => ({
+      fields: Array.from(form.querySelectorAll('input, textarea, select, button'))
+        .filter((el) => (el.getAttribute('type') || '').toLowerCase() !== 'hidden')
+        .map((el, index) => ({
         index,
         tag: el.tagName.toLowerCase(),
         type: el.getAttribute('type') || el.tagName.toLowerCase(),
@@ -231,10 +267,9 @@ defmodule SpectreLens.Page do
         ).trim(),
         required: !!el.required,
         disabled: !!el.disabled,
-        value: el.type === 'password' ? null : el.value,
         selector: el.id ? `#${CSS.escape(el.id)}` : null,
         options: el.tagName.toLowerCase() === 'select'
-          ? Array.from(el.options).map(o => ({value: o.value, text: o.text, selected: o.selected}))
+          ? Array.from(el.options).map(o => ({text: o.text}))
           : []
       }))
     }))
@@ -501,16 +536,33 @@ defmodule SpectreLens.Page do
              conn,
              "Target.createTarget",
              create_target_params(target_url, browser_context_id)
-           ),
-         {:ok, %{"sessionId" => session_id}} <-
-           Connection.send_command(conn, "Target.attachToTarget", %{
-             targetId: target_id,
-             flatten: true
-           }),
-         {:ok, _} <- cdp(conn, session_id, "Page.enable", %{}, 5_000),
-         {:ok, _} <- cdp(conn, session_id, "DOM.enable", %{}, 5_000),
-         {:ok, _} <- cdp(conn, session_id, "Runtime.enable", %{}, 5_000) do
-      {:ok, build_tab(conn, target_id, session_id, browser_context_id, opts)}
+           ) do
+      attach_and_enable_target(conn, target_id, browser_context_id, opts)
+    end
+  end
+
+  @spec attach_and_enable_target(pid(), binary(), binary() | nil, keyword()) ::
+          {:ok, Tab.t()} | {:error, term()}
+  defp attach_and_enable_target(conn, target_id, browser_context_id, opts) do
+    result =
+      with {:ok, %{"sessionId" => session_id}} <-
+             Connection.send_command(conn, "Target.attachToTarget", %{
+               targetId: target_id,
+               flatten: true
+             }),
+           {:ok, _} <- cdp(conn, session_id, "Page.enable", %{}, 5_000),
+           {:ok, _} <- cdp(conn, session_id, "DOM.enable", %{}, 5_000),
+           {:ok, _} <- cdp(conn, session_id, "Runtime.enable", %{}, 5_000) do
+        {:ok, build_tab(conn, target_id, session_id, browser_context_id, opts)}
+      end
+
+    case result do
+      {:ok, _tab} = ok ->
+        ok
+
+      {:error, _reason} = error ->
+        close_target(%Tab{conn: conn, target_id: target_id})
+        error
     end
   end
 
@@ -531,7 +583,8 @@ defmodule SpectreLens.Page do
       session_key: opts[:session_key],
       runtime: opts[:runtime],
       instance_id: opts[:instance_id],
-      endpoint: opts[:endpoint]
+      endpoint: opts[:endpoint],
+      url_policy: SpectreLens.URLPolicy.take_options(opts)
     }
   end
 

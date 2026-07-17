@@ -24,7 +24,7 @@ defmodule SpectreLens.Plugs.LlmsTxt do
 
   @spec enabled?(Context.t(), keyword()) :: boolean()
   defp enabled?(context, opts) do
-    Keyword.get(opts, :llms?, true) or Helpers.included?(context, :llms)
+    Keyword.get(opts, :llms?, false) or Helpers.included?(context, :llms)
   end
 
   @spec discover(Context.t(), keyword()) :: Context.t()
@@ -42,7 +42,10 @@ defmodule SpectreLens.Plugs.LlmsTxt do
 
   @spec put_llms(Context.t(), binary(), [map()], keyword()) :: Context.t()
   defp put_llms(context, url, links, opts) do
-    opts = Keyword.put_new(opts, :full?, true)
+    opts =
+      context.tab.url_policy
+      |> Keyword.merge(opts)
+      |> Keyword.put_new(:full?, true)
 
     case LlmsTxt.discover_from_page(url, links, opts) do
       {:ok, doc} ->

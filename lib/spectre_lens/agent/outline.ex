@@ -12,10 +12,11 @@ defmodule SpectreLens.Outline do
   @type t :: %__MODULE__{
           text: binary(),
           sections: [Section.t()],
-          detailed?: boolean()
+          detailed?: boolean(),
+          trust: :untrusted
         }
 
-  defstruct text: "", sections: [], detailed?: false
+  defstruct text: "", sections: [], detailed?: false, trust: :untrusted
 
   @doc "Builds an outline from page-map regions."
   @spec from_regions([Region.t()], keyword()) :: t()

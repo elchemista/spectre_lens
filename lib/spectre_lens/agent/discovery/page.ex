@@ -6,9 +6,10 @@ defmodule SpectreLens.Discovery.Page do
           title: binary() | nil,
           outline: SpectreLens.Outline.t() | nil,
           summary: binary() | nil,
+          trust: :untrusted,
           depth: non_neg_integer(),
           hash: binary() | nil
         }
 
-  defstruct [:url, :title, :outline, :summary, :depth, :hash]
+  defstruct [:url, :title, :outline, :summary, :depth, :hash, trust: :untrusted]
 end

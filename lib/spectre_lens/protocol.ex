@@ -54,7 +54,13 @@ defmodule SpectreLens.Protocol do
   def command(%Tab{} = tab, method, params \\ %{}, opts \\ []),
     do: driver(tab).command(tab, method, params, opts)
 
-  def navigate(%Tab{} = tab, url, opts \\ []), do: driver(tab).navigate(tab, url, opts)
+  def navigate(%Tab{} = tab, url, opts \\ []) do
+    policy_opts = SpectreLens.URLPolicy.merge_options(tab.url_policy, opts)
+
+    with {:ok, url} <- SpectreLens.URLPolicy.validate(url, policy_opts) do
+      driver(tab).navigate(tab, url, opts)
+    end
+  end
 
   def evaluate(%Tab{} = tab, expression, opts \\ []),
     do: driver(tab).evaluate(tab, expression, opts)

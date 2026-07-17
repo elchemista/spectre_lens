@@ -23,6 +23,7 @@ defmodule SpectreLens.Discovery do
           visited: [Page.t()],
           candidates: [Candidate.t()],
           forms: [map()],
+          trust: :untrusted,
           warnings: [term()],
           errors: [term()]
         }
@@ -33,6 +34,7 @@ defmodule SpectreLens.Discovery do
             visited: [],
             candidates: [],
             forms: [],
+            trust: :untrusted,
             warnings: [],
             errors: []
 
@@ -311,7 +313,12 @@ defmodule SpectreLens.Discovery do
       errors: Enum.reverse(state.errors)
     }
 
-    {:ok, %{discovery | text: render_text(discovery)}}
+    text =
+      discovery
+      |> render_text()
+      |> SpectreLens.UntrustedContent.wrap(discovery.root_url)
+
+    {:ok, %{discovery | text: text}}
   end
 
   @spec final_candidates(map(), [Page.t()]) :: [Candidate.t()]

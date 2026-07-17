@@ -13,11 +13,13 @@ defmodule SpectreLens do
     Discovery,
     LlmsTxt,
     Outline,
+    PageMap,
     PlugPipeline,
     Region,
     Runtime,
     Session,
     Tab,
+    UntrustedContent,
     View,
     Watcher
   }
@@ -370,7 +372,7 @@ defmodule SpectreLens do
   def llms(%Tab{} = tab, opts) do
     SpectreLens.Errors.safe(:llms, fn ->
       with {:ok, url} <- SpectreLens.Protocol.url(tab) do
-        LlmsTxt.discover(url, opts)
+        LlmsTxt.discover(url, Keyword.merge(tab.url_policy, opts))
       end
     end)
   end
@@ -394,6 +396,36 @@ defmodule SpectreLens do
     end)
   end
 
+  @doc """
+  Renders an agent-facing value inside an explicit untrusted-web-content boundary.
+
+  Raw projection fields remain available on their structs for storage and
+  programmatic processing. Use this function whenever page-derived text is
+  inserted into a model context.
+  """
+  @spec agent_context(View.t() | LlmsTxt.t() | Discovery.t() | PageMap.t() | Outline.t(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def agent_context(value, opts \\ [])
+
+  def agent_context(%View{} = view, opts) do
+    with {:ok, content} <- view_context(view, opts) do
+      {:ok, UntrustedContent.wrap(content, view.url)}
+    end
+  end
+
+  def agent_context(%LlmsTxt{} = doc, opts), do: LlmsTxt.to_context(doc, opts)
+
+  def agent_context(%Discovery{text: text, root_url: url}, _opts) when is_binary(text),
+    do: {:ok, UntrustedContent.wrap(text, url)}
+
+  def agent_context(%PageMap{description: text}, opts) when is_binary(text),
+    do: {:ok, UntrustedContent.wrap(text, opts[:source_url])}
+
+  def agent_context(%Outline{text: text}, opts) when is_binary(text),
+    do: {:ok, UntrustedContent.wrap(text, opts[:source_url])}
+
+  def agent_context(_value, _opts), do: {:error, :unsupported_agent_context}
+
   @doc "Converts an error into an agent-readable packet with retry guidance."
   @spec explain_error(term()) :: SpectreLens.Errors.agent_error()
   def explain_error(reason), do: SpectreLens.Errors.to_agent(reason)
@@ -411,9 +443,39 @@ defmodule SpectreLens do
     SpectreLens.Errors.safe(:act, fun)
   end
 
+  @spec view_context(View.t(), keyword()) :: {:ok, binary()} | {:error, term()}
+  defp view_context(view, opts) do
+    content =
+      case Keyword.get(opts, :prefer, :markdown) do
+        :markdown -> view.markdown
+        :semantic_text -> view.semantic_text
+        :llms -> view.llms_context
+        :html -> view.html
+        other -> {:invalid, other}
+      end
+
+    case content do
+      content when is_binary(content) and content != "" -> {:ok, content}
+      {:invalid, other} -> {:error, {:invalid_agent_context_preference, other}}
+      _ -> {:error, :no_agent_context}
+    end
+  end
+
   @spec runtime_opts(keyword()) :: keyword()
   defp runtime_opts(opts) do
-    Keyword.take(opts, [:binary, :driver, :host, :instances, :port, :ports, :serve_args, :timeout])
+    Keyword.take(opts, [
+      :allowed_ports,
+      :binary,
+      :driver,
+      :host,
+      :instances,
+      :network_policy,
+      :port,
+      :ports,
+      :resolver,
+      :serve_args,
+      :timeout
+    ])
   end
 
   @spec normalize_opts(list()) :: keyword()
