@@ -128,6 +128,15 @@ defmodule SpectreLens.CDP.Connection do
     end
   end
 
+  @doc "Cancels a one-shot CDP event waiter if it is still registered."
+  @spec cancel_event_waiter(event_waiter()) :: :ok
+  def cancel_event_waiter({pid, ref}) when is_pid(pid) and is_reference(ref) do
+    WebSockex.cast(pid, {:cancel_event_waiter, self(), ref})
+    :ok
+  catch
+    _, _ -> :ok
+  end
+
   @doc "Registers and waits for a CDP event in one call."
   @spec wait_for_event(pid(), binary(), non_neg_integer(), binary() | nil) ::
           {:ok, map()} | {:error, Exception.t()}

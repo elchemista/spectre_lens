@@ -92,9 +92,14 @@ defmodule SpectreLens.Page do
       wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
 
       result =
-        with {:ok, _} <- Connection.send_command(conn, "Page.navigate", %{url: url}, timeout, sid),
-             {:ok, _} <- Connection.await_event(wait_ref, timeout) do
-          maybe_wait_for_usable_document(conn, sid, opts, timeout)
+        try do
+          with {:ok, _} <-
+                 Connection.send_command(conn, "Page.navigate", %{url: url}, timeout, sid),
+               {:ok, _} <- Connection.await_event(wait_ref, timeout) do
+            maybe_wait_for_usable_document(conn, sid, opts, timeout)
+          end
+        after
+          Connection.cancel_event_waiter(wait_ref)
         end
 
       span_result(result)
@@ -388,7 +393,12 @@ defmodule SpectreLens.Page do
     page_operation(tab, :wait_for_navigation, %{}, fn ->
       timeout = opts[:timeout] || @navigation_timeout
       wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
-      await_after(fun, wait_ref, timeout)
+
+      try do
+        await_after(fun, wait_ref, timeout)
+      after
+        Connection.cancel_event_waiter(wait_ref)
+      end
     end)
   end
 
@@ -685,7 +695,8 @@ defmodule SpectreLens.Page do
     """
   end
 
-  @spec await_after((-> term()), reference(), non_neg_integer()) :: :ok | {:error, term()}
+  @spec await_after((-> term()), Connection.event_waiter(), non_neg_integer()) ::
+          :ok | {:error, term()}
   defp await_after(fun, wait_ref, timeout) do
     case fun.() do
       {:error, _} = error -> error
@@ -693,7 +704,8 @@ defmodule SpectreLens.Page do
     end
   end
 
-  @spec await_navigation_event(reference(), non_neg_integer()) :: :ok | {:error, term()}
+  @spec await_navigation_event(Connection.event_waiter(), non_neg_integer()) ::
+          :ok | {:error, term()}
   defp await_navigation_event(wait_ref, timeout) do
     case Connection.await_event(wait_ref, timeout) do
       {:ok, _} -> :ok
@@ -901,9 +913,13 @@ defmodule SpectreLens.Page do
     timeout = opts[:timeout] || @navigation_timeout
     wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
 
-    with {:ok, _} <- Connection.send_command(conn, "Page.reload", %{}, timeout, sid),
-         {:ok, _} <- Connection.await_event(wait_ref, timeout) do
-      :ok
+    try do
+      with {:ok, _} <- Connection.send_command(conn, "Page.reload", %{}, timeout, sid),
+           {:ok, _} <- Connection.await_event(wait_ref, timeout) do
+        :ok
+      end
+    after
+      Connection.cancel_event_waiter(wait_ref)
     end
   end
 
