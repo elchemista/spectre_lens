@@ -14,6 +14,31 @@ defmodule SpectreLens.URLPolicy do
 
   @option_keys [:network_policy, :allowed_ports, :resolver]
   @default_ports [80, 443]
+  @blocked_ipv4_networks [
+    {0x00000000, 0xFF000000},
+    {0x0A000000, 0xFF000000},
+    {0x64400000, 0xFFC00000},
+    {0x7F000000, 0xFF000000},
+    {0xA9FE0000, 0xFFFF0000},
+    {0xAC100000, 0xFFF00000},
+    {0xC0000000, 0xFFFFFF00},
+    {0xC0000200, 0xFFFFFF00},
+    {0xC0586300, 0xFFFFFF00},
+    {0xC0A80000, 0xFFFF0000},
+    {0xC6120000, 0xFFFE0000},
+    {0xC6336400, 0xFFFFFF00},
+    {0xCB007100, 0xFFFFFF00},
+    {0xE0000000, 0xE0000000}
+  ]
+  @blocked_ipv6_networks [
+    {0xFC0000000000, 0xFE0000000000},
+    {0xFE8000000000, 0xFFC000000000},
+    {0xFF0000000000, 0xFF0000000000},
+    {0x0064FF9B0001, 0xFFFFFFFFFFFF},
+    {0x200100000000, 0xFFFFFFFF0000},
+    {0x20010DB80000, 0xFFFFFFFF0000},
+    {0x010000000000, 0xFFFFFFFF0000}
+  ]
   @blocked_names MapSet.new([
                    "instance-data",
                    "instance-data.ec2.internal",
@@ -158,12 +183,10 @@ defmodule SpectreLens.URLPolicy do
   defp validate_host(_host, :any, _opts), do: :ok
 
   defp validate_host(host, :public, opts) do
-    cond do
-      blocked_name?(host) ->
-        {:error, {:host_not_allowed, host}}
-
-      true ->
-        validate_resolved_addresses(host, opts)
+    if blocked_name?(host) do
+      {:error, {:host_not_allowed, host}}
+    else
+      validate_resolved_addresses(host, opts)
     end
   end
 
@@ -241,21 +264,12 @@ defmodule SpectreLens.URLPolicy do
   end
 
   @spec private_ipv4?(:inet.ip4_address()) :: boolean()
-  defp private_ipv4?({a, b, c, _d}) do
-    a == 0 or
-      a == 10 or
-      (a == 100 and b in 64..127) or
-      a == 127 or
-      (a == 169 and b == 254) or
-      (a == 172 and b in 16..31) or
-      (a == 192 and b == 0 and c == 0) or
-      (a == 192 and b == 168) or
-      (a == 192 and b == 0 and c == 2) or
-      (a == 192 and b == 88 and c == 99) or
-      (a == 198 and b in 18..19) or
-      (a == 198 and b == 51 and c == 100) or
-      (a == 203 and b == 0 and c == 113) or
-      a >= 224
+  defp private_ipv4?(address) do
+    address = ipv4_to_integer(address)
+
+    Enum.any?(@blocked_ipv4_networks, fn {network, mask} ->
+      (address &&& mask) == network
+    end)
   end
 
   @spec private_ipv6?(:inet.ip6_address()) :: boolean()
@@ -284,14 +298,15 @@ defmodule SpectreLens.URLPolicy do
   end
 
   defp private_ipv6?({first, second, third, _d, _e, _f, _g, _h}) do
-    (first &&& 0xFE00) == 0xFC00 or
-      (first &&& 0xFFC0) == 0xFE80 or
-      (first &&& 0xFF00) == 0xFF00 or
-      (first == 0x0064 and second == 0xFF9B and third == 1) or
-      (first == 0x2001 and second == 0) or
-      (first == 0x2001 and second == 0x0DB8) or
-      (first == 0x0100 and second == 0)
+    prefix = first <<< 32 ||| second <<< 16 ||| third
+
+    Enum.any?(@blocked_ipv6_networks, fn {network, mask} ->
+      (prefix &&& mask) == network
+    end)
   end
+
+  @spec ipv4_to_integer(:inet.ip4_address()) :: non_neg_integer()
+  defp ipv4_to_integer({a, b, c, d}), do: a <<< 24 ||| b <<< 16 ||| c <<< 8 ||| d
 
   @spec embedded_private_ipv4?(non_neg_integer(), non_neg_integer()) :: boolean()
   defp embedded_private_ipv4?(high, low) do

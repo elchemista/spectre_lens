@@ -571,7 +571,7 @@ defmodule SpectreLens.Page do
         ok
 
       {:error, _reason} = error ->
-        close_target(%Tab{conn: conn, target_id: target_id})
+        close_target(conn, target_id)
         error
     end
   end
@@ -600,6 +600,11 @@ defmodule SpectreLens.Page do
 
   @spec close_target(Tab.t()) :: :ok | {:error, term()}
   defp close_target(%Tab{conn: conn, target_id: target_id}) do
+    close_target(conn, target_id)
+  end
+
+  @spec close_target(pid(), binary() | nil) :: :ok | {:error, term()}
+  defp close_target(conn, target_id) do
     if target_id do
       case Connection.send_command(conn, "Target.closeTarget", %{targetId: target_id}, 5_000) do
         {:ok, _} -> :ok

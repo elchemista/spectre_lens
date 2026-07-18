@@ -110,8 +110,7 @@ defmodule SpectreLens.Watcher do
   @spec view_hash(SpectreLens.View.t()) :: binary()
   defp view_hash(view) do
     view
-    |> Map.from_struct()
-    |> Jason.encode!()
+    |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end

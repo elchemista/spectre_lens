@@ -8,7 +8,7 @@ defmodule SpectreLens.Discovery do
   a scorer module that implements `SpectreLens.Discovery.Scorer`.
   """
 
-  alias SpectreLens.Discovery.{Candidate, Page}
+  alias SpectreLens.Discovery.{Candidate, Page, State}
   alias SpectreLens.{Outline, Tab, View}
 
   @default_max_depth 2
@@ -46,7 +46,7 @@ defmodule SpectreLens.Discovery do
       root_url = canonical_url(root_url) || root_url
       {scorer, scorer_opts} = scorer(opts)
 
-      state = %{
+      state = %State{
         tab: tab,
         goal: goal,
         root_url: root_url,
@@ -56,12 +56,7 @@ defmodule SpectreLens.Discovery do
         opts: opts,
         queue: :queue.from_list([{root_url, 0}]),
         seen: MapSet.new([root_url]),
-        current_url: root_url,
-        visited: [],
-        candidates: [],
-        forms: [],
-        warnings: [],
-        errors: []
+        current_url: root_url
       }
 
       state
@@ -82,58 +77,62 @@ defmodule SpectreLens.Discovery do
     end
   end
 
-  @spec crawl(map()) :: map()
-  defp crawl(state) do
-    cond do
-      length(state.visited) >= max_pages(state.opts) ->
-        state
-
-      :queue.is_empty(state.queue) ->
-        state
-
-      true ->
-        {{:value, {url, depth}}, queue} = :queue.out(state.queue)
-        state = %{state | queue: queue}
-
-        if depth > max_depth(state.opts) do
-          crawl(state)
-        else
-          state
-          |> visit(url, depth)
-          |> crawl()
-        end
+  @spec crawl(State.t()) :: State.t()
+  defp crawl(%State{} = state) do
+    if crawl_complete?(state) do
+      state
+    else
+      state
+      |> take_next_page()
+      |> crawl()
     end
   end
 
-  @spec visit(map(), binary(), non_neg_integer()) :: map()
-  defp visit(state, url, depth) do
+  @spec crawl_complete?(State.t()) :: boolean()
+  defp crawl_complete?(%State{} = state) do
+    state.visited_count >= max_pages(state.opts) or :queue.is_empty(state.queue)
+  end
+
+  @spec take_next_page(State.t()) :: State.t()
+  defp take_next_page(%State{} = state) do
+    {{:value, {url, depth}}, queue} = :queue.out(state.queue)
+    state = %{state | queue: queue}
+
+    if depth > max_depth(state.opts), do: state, else: visit(state, url, depth)
+  end
+
+  @spec visit(State.t(), binary(), non_neg_integer()) :: State.t()
+  defp visit(%State{} = state, url, depth) do
     with :ok <- maybe_navigate(state, url),
          {:ok, page, forms, candidates, warnings, errors} <- inspect_page(state, url, depth) do
       candidates = cap_page_candidates(candidates, url, state, warnings)
       {kept_candidates, cap_warnings} = candidates
 
-      state
-      |> Map.put(:current_url, url)
-      |> update_in([:visited], &[page | &1])
-      |> update_in([:forms], &(forms ++ &1))
-      |> update_in([:candidates], &(kept_candidates ++ &1))
-      |> update_in([:warnings], &(cap_warnings ++ warnings ++ &1))
-      |> update_in([:errors], &(errors ++ &1))
+      %{
+        state
+        | current_url: url,
+          visited: [page | state.visited],
+          visited_count: state.visited_count + 1,
+          forms: forms ++ state.forms,
+          candidates: kept_candidates ++ state.candidates,
+          warnings: cap_warnings ++ warnings ++ state.warnings,
+          errors: errors ++ state.errors
+      }
       |> enqueue_candidates(kept_candidates, depth + 1)
     else
       {:error, reason} ->
-        update_in(state.errors, &[{:visit_failed, url, reason} | &1])
+        %{state | errors: [{:visit_failed, url, reason} | state.errors]}
     end
   end
 
-  @spec maybe_navigate(map(), binary()) :: :ok | {:error, term()}
+  @spec maybe_navigate(State.t(), binary()) :: :ok | {:error, term()}
   defp maybe_navigate(%{current_url: url}, url), do: :ok
 
   defp maybe_navigate(%{opts: opts} = state, url) do
     SpectreLens.Protocol.navigate(state.tab, url, opts)
   end
 
-  @spec inspect_page(map(), binary(), non_neg_integer()) ::
+  @spec inspect_page(State.t(), binary(), non_neg_integer()) ::
           {:ok, Page.t(), [map()], [Candidate.t()], [term()], [term()]} | {:error, term()}
   defp inspect_page(state, url, depth) do
     tab = state.tab
@@ -170,7 +169,7 @@ defmodule SpectreLens.Discovery do
     end)
   end
 
-  @spec candidates_from_view(View.t(), Outline.t(), map(), Page.t(), non_neg_integer()) ::
+  @spec candidates_from_view(View.t(), Outline.t(), State.t(), Page.t(), non_neg_integer()) ::
           {[Candidate.t()], [term()]}
   defp candidates_from_view(%View{} = view, %Outline{} = outline, state, page, depth) do
     links = view.links
@@ -181,9 +180,12 @@ defmodule SpectreLens.Discovery do
       |> Enum.reject(&is_nil/1)
       |> score_candidates(state, page, outline, view, depth)
 
+    candidate_count = length(candidates)
+    link_count = length(links)
+
     warnings =
-      if length(candidates) < length(links) do
-        [{:links_filtered, page.url, length(links), length(candidates)}]
+      if candidate_count < link_count do
+        [{:links_filtered, page.url, link_count, candidate_count}]
       else
         []
       end
@@ -191,7 +193,7 @@ defmodule SpectreLens.Discovery do
     {candidates, warnings}
   end
 
-  @spec candidate_from_link(map(), map(), binary(), non_neg_integer(), Outline.t()) ::
+  @spec candidate_from_link(map(), State.t(), binary(), non_neg_integer(), Outline.t()) ::
           Candidate.t() | nil
   defp candidate_from_link(link, state, source_url, depth, outline) do
     href = get_any(link, :href) || get_any(link, "href")
@@ -217,7 +219,7 @@ defmodule SpectreLens.Discovery do
 
   @spec score_candidates(
           [Candidate.t()],
-          map(),
+          State.t(),
           Page.t(),
           Outline.t(),
           View.t(),
@@ -255,15 +257,16 @@ defmodule SpectreLens.Discovery do
     end
   end
 
-  @spec cap_page_candidates([Candidate.t()], binary(), map(), [term()]) ::
+  @spec cap_page_candidates([Candidate.t()], binary(), State.t(), [term()]) ::
           {[Candidate.t()], [term()]}
   defp cap_page_candidates(candidates, url, state, _warnings) do
     max = max_links_per_page(state.opts)
     kept = Enum.take(candidates, max)
+    candidate_count = length(candidates)
 
     warnings =
-      if length(candidates) > max do
-        [{:links_truncated, url, length(candidates), length(kept)}]
+      if candidate_count > max do
+        [{:links_truncated, url, candidate_count, length(kept)}]
       else
         []
       end
@@ -271,8 +274,8 @@ defmodule SpectreLens.Discovery do
     {kept, warnings}
   end
 
-  @spec enqueue_candidates(map(), [Candidate.t()], non_neg_integer()) :: map()
-  defp enqueue_candidates(state, candidates, depth) do
+  @spec enqueue_candidates(State.t(), [Candidate.t()], non_neg_integer()) :: State.t()
+  defp enqueue_candidates(%State{} = state, candidates, depth) do
     if depth > max_depth(state.opts) do
       state
     else
@@ -280,10 +283,10 @@ defmodule SpectreLens.Discovery do
     end
   end
 
-  @spec enqueue_candidate(Candidate.t(), map(), non_neg_integer()) :: map()
+  @spec enqueue_candidate(Candidate.t(), State.t(), non_neg_integer()) :: State.t()
   defp enqueue_candidate(candidate, state, depth) do
     cond do
-      length(state.visited) + :queue.len(state.queue) >= max_pages(state.opts) ->
+      state.visited_count + :queue.len(state.queue) >= max_pages(state.opts) ->
         state
 
       MapSet.member?(state.seen, candidate.url) ->
@@ -298,8 +301,8 @@ defmodule SpectreLens.Discovery do
     end
   end
 
-  @spec finalize(map()) :: {:ok, t()}
-  defp finalize(state) do
+  @spec finalize(State.t()) :: {:ok, t()}
+  defp finalize(%State{} = state) do
     visited = Enum.reverse(state.visited)
     candidates = final_candidates(state, visited)
 
@@ -321,8 +324,8 @@ defmodule SpectreLens.Discovery do
     {:ok, %{discovery | text: text}}
   end
 
-  @spec final_candidates(map(), [Page.t()]) :: [Candidate.t()]
-  defp final_candidates(state, visited) do
+  @spec final_candidates(State.t(), [Page.t()]) :: [Candidate.t()]
+  defp final_candidates(%State{} = state, visited) do
     context = %{goal: state.goal, root_url: state.root_url, visited: visited}
 
     state.candidates
@@ -358,6 +361,7 @@ defmodule SpectreLens.Discovery do
     |> String.trim()
   end
 
+  @spec render_pages([Page.t()]) :: binary()
   defp render_pages([]), do: "- none"
 
   defp render_pages(pages) do
@@ -367,6 +371,7 @@ defmodule SpectreLens.Discovery do
     end)
   end
 
+  @spec render_candidates([Candidate.t()]) :: binary()
   defp render_candidates([]), do: "- none"
 
   defp render_candidates(candidates) do
@@ -377,6 +382,7 @@ defmodule SpectreLens.Discovery do
     end)
   end
 
+  @spec render_forms([map()]) :: binary()
   defp render_forms([]), do: "- none"
 
   defp render_forms(forms) do
@@ -387,6 +393,7 @@ defmodule SpectreLens.Discovery do
     end)
   end
 
+  @spec render_terms([term()]) :: binary()
   defp render_terms([]), do: "- none"
   defp render_terms(terms), do: Enum.map_join(terms, "\n", &"- #{inspect(&1)}")
 
@@ -402,6 +409,7 @@ defmodule SpectreLens.Discovery do
 
   defp summary(_markdown, outline), do: outline_summary(outline)
 
+  @spec outline_summary(Outline.t()) :: binary() | nil
   defp outline_summary(%Outline{text: text}) when is_binary(text) do
     text |> String.replace("\n", " ") |> String.slice(0, 320) |> blank_to_nil()
   end
@@ -456,9 +464,7 @@ defmodule SpectreLens.Discovery do
   @spec allowed_scheme?(binary() | nil) :: boolean()
   defp allowed_scheme?(scheme), do: scheme in ["http", "https"]
 
-  @spec region_for_link(binary() | nil, Outline.t()) :: atom() | nil
-  defp region_for_link(nil, _outline), do: nil
-
+  @spec region_for_link(term(), Outline.t()) :: atom() | nil
   defp region_for_link(text, %Outline{sections: sections}) when is_binary(text) do
     normalized = normalize_text(text)
 
@@ -497,25 +503,31 @@ defmodule SpectreLens.Discovery do
     end
   end
 
+  @spec max_depth(keyword()) :: non_neg_integer()
   defp max_depth(opts), do: Keyword.get(opts, :max_depth, @default_max_depth)
+
+  @spec max_pages(keyword()) :: pos_integer()
   defp max_pages(opts), do: Keyword.get(opts, :max_pages, @default_max_pages)
 
+  @spec max_links_per_page(keyword()) :: non_neg_integer()
   defp max_links_per_page(opts),
     do: Keyword.get(opts, :max_links_per_page, @default_max_links_per_page)
 
+  @spec max_candidates(keyword()) :: non_neg_integer()
   defp max_candidates(opts), do: Keyword.get(opts, :max_candidates, @default_max_candidates)
 
+  @spec get_any(term(), term(), term()) :: term()
   defp get_any(map, key, default \\ nil)
   defp get_any(map, key, default) when is_map(map), do: Map.get(map, key, default)
   defp get_any(_map, _key, default), do: default
 
-  defp blank_to_nil(nil), do: nil
-
+  @spec blank_to_nil(term()) :: term() | nil
   defp blank_to_nil(value) when is_binary(value),
     do: if(String.trim(value) == "", do: nil, else: value)
 
   defp blank_to_nil(value), do: value
 
+  @spec normalize_text(term()) :: binary()
   defp normalize_text(nil), do: ""
 
   defp normalize_text(text) when is_binary(text) do

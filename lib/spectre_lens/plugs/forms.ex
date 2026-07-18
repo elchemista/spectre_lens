@@ -55,14 +55,19 @@ defmodule SpectreLens.Plugs.Forms do
   @spec call(Context.t(), keyword()) :: Context.t()
   def call(context, opts) do
     if Helpers.included?(context, :forms) do
-      Helpers.collect(context, :forms, fn ->
-        with {:ok, forms} <- SpectreLens.Protocol.forms(context.tab, opts) do
-          {:ok, sanitize(forms)}
-        end
-      end)
+      collect_forms(context, opts)
     else
       context
     end
+  end
+
+  @spec collect_forms(Context.t(), keyword()) :: Context.t()
+  defp collect_forms(context, opts) do
+    Helpers.collect(context, :forms, fn ->
+      with {:ok, forms} <- SpectreLens.Protocol.forms(context.tab, opts) do
+        {:ok, sanitize(forms)}
+      end
+    end)
   end
 
   @doc false

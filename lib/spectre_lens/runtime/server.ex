@@ -562,31 +562,9 @@ defmodule SpectreLens.Runtime do
   @spec start_instances(pos_integer(), keyword()) :: {:ok, [map()]} | {:error, term(), [map()]}
   defp start_instances(count, opts) do
     Enum.reduce_while(1..count, {:ok, []}, fn index, {:ok, acc} ->
-      instance_opts =
-        opts
-        |> Keyword.drop([:instances, :max_tabs_per_instance, :port])
-        |> Keyword.put(:id, index)
-        |> maybe_put(:port, port_for(opts, index, count))
-
-      case SpectreLens.Lightpanda.start_instance(instance_opts) do
-        {:ok, lightpanda} ->
-          case Connection.open(lightpanda.endpoint) do
-            {:ok, conn} ->
-              :ok = Connection.subscribe_event(conn, "Target.targetDestroyed", nil, self())
-
-              instance =
-                lightpanda
-                |> Map.put(:conn, conn)
-                |> Map.put(:driver, SpectreLens.Protocol.driver(opts))
-                |> Map.put(:tabs, %{})
-                |> Map.put(:reservations, %{})
-
-              {:cont, {:ok, [instance | acc]}}
-
-            {:error, reason} ->
-              SpectreLens.Lightpanda.stop_instance(lightpanda)
-              {:halt, {:error, reason, acc}}
-          end
+      case start_instance(index, count, opts) do
+        {:ok, instance} ->
+          {:cont, {:ok, [instance | acc]}}
 
         {:error, reason} ->
           {:halt, {:error, reason, acc}}
@@ -595,6 +573,40 @@ defmodule SpectreLens.Runtime do
     |> case do
       {:ok, instances} -> {:ok, Enum.reverse(instances)}
       other -> other
+    end
+  end
+
+  @spec start_instance(pos_integer(), pos_integer(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp start_instance(index, count, opts) do
+    instance_opts =
+      opts
+      |> Keyword.drop([:instances, :max_tabs_per_instance, :port])
+      |> Keyword.put(:id, index)
+      |> maybe_put(:port, port_for(opts, index, count))
+
+    with {:ok, lightpanda} <- SpectreLens.Lightpanda.start_instance(instance_opts) do
+      open_instance(lightpanda, opts)
+    end
+  end
+
+  @spec open_instance(map(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp open_instance(lightpanda, opts) do
+    case Connection.open(lightpanda.endpoint) do
+      {:ok, conn} ->
+        :ok = Connection.subscribe_event(conn, "Target.targetDestroyed", nil, self())
+
+        instance =
+          lightpanda
+          |> Map.put(:conn, conn)
+          |> Map.put(:driver, SpectreLens.Protocol.driver(opts))
+          |> Map.put(:tabs, %{})
+          |> Map.put(:reservations, %{})
+
+        {:ok, instance}
+
+      {:error, reason} ->
+        SpectreLens.Lightpanda.stop_instance(lightpanda)
+        {:error, reason}
     end
   end
 

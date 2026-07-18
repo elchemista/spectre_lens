@@ -166,9 +166,7 @@ defmodule SpectreLens.CDP.RequestGuard do
     :ok
   end
 
-  @spec safe_reason(term()) :: term()
-  defp safe_reason({kind, _host, _address}) when kind in [:address_not_allowed], do: kind
+  @spec safe_reason({atom(), term()} | {atom(), term(), term()}) :: atom()
+  defp safe_reason({:address_not_allowed, _host, _address}), do: :address_not_allowed
   defp safe_reason({kind, _value}) when is_atom(kind), do: kind
-  defp safe_reason(kind) when is_atom(kind), do: kind
-  defp safe_reason(_reason), do: :blocked_by_policy
 end

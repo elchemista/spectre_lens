@@ -124,19 +124,24 @@ defmodule SpectreLens.LlmsTxt do
   @doc "Returns Markdown context to feed an agent from a parsed `llms.txt` document."
   @spec to_context(t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def to_context(%__MODULE__{} = doc, opts \\ []) do
-    result =
-      case opts[:prefer] || :full do
-        :full -> preferred_context(doc.full_content, doc.content)
-        :index -> preferred_context(doc.content, nil)
-        :both -> both_context(doc)
-        other -> {:error, {:invalid_llms_context_preference, other}}
-      end
-
-    case result do
-      {:ok, content} when opts[:raw?] -> {:ok, content}
-      {:ok, content} -> {:ok, SpectreLens.UntrustedContent.wrap(content, doc.full_url || doc.url)}
-      {:error, _} = error -> error
+    with {:ok, content} <- context_content(doc, opts[:prefer] || :full) do
+      format_context(content, doc, opts[:raw?] not in [false, nil])
     end
+  end
+
+  @spec context_content(t(), term()) :: {:ok, binary()} | {:error, term()}
+  defp context_content(doc, :full), do: preferred_context(doc.full_content, doc.content)
+  defp context_content(doc, :index), do: preferred_context(doc.content, nil)
+  defp context_content(doc, :both), do: both_context(doc)
+
+  defp context_content(_doc, other),
+    do: {:error, {:invalid_llms_context_preference, other}}
+
+  @spec format_context(binary(), t(), boolean()) :: {:ok, binary()}
+  defp format_context(content, _doc, true), do: {:ok, content}
+
+  defp format_context(content, doc, false) do
+    {:ok, SpectreLens.UntrustedContent.wrap(content, doc.full_url || doc.url)}
   end
 
   @doc "Returns candidate index and full-context URLs for a site or direct file URL."

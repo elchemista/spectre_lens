@@ -445,21 +445,25 @@ defmodule SpectreLens do
 
   @spec view_context(View.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   defp view_context(view, opts) do
-    content =
-      case Keyword.get(opts, :prefer, :markdown) do
-        :markdown -> view.markdown
-        :semantic_text -> view.semantic_text
-        :llms -> view.llms_context
-        :html -> view.html
-        other -> {:invalid, other}
-      end
-
-    case content do
-      content when is_binary(content) and content != "" -> {:ok, content}
-      {:invalid, other} -> {:error, {:invalid_agent_context_preference, other}}
-      _ -> {:error, :no_agent_context}
+    with {:ok, content} <- preferred_view_content(view, Keyword.get(opts, :prefer, :markdown)) do
+      validate_view_content(content)
     end
   end
+
+  @spec preferred_view_content(View.t(), term()) :: {:ok, term()} | {:error, term()}
+  defp preferred_view_content(view, :markdown), do: {:ok, view.markdown}
+  defp preferred_view_content(view, :semantic_text), do: {:ok, view.semantic_text}
+  defp preferred_view_content(view, :llms), do: {:ok, view.llms_context}
+  defp preferred_view_content(view, :html), do: {:ok, view.html}
+
+  defp preferred_view_content(_view, other),
+    do: {:error, {:invalid_agent_context_preference, other}}
+
+  @spec validate_view_content(term()) :: {:ok, binary()} | {:error, :no_agent_context}
+  defp validate_view_content(content) when is_binary(content) and content != "",
+    do: {:ok, content}
+
+  defp validate_view_content(_content), do: {:error, :no_agent_context}
 
   @spec runtime_opts(keyword()) :: keyword()
   defp runtime_opts(opts) do
