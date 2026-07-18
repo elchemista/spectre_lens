@@ -14,7 +14,7 @@
 /tmp/
 
 /.elixir_ls/
-
+# temporary ignore for doing refactor
 SKILL.md
 
 # If the VM crashes, it generates a dump, let's ignore it too.
