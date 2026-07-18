@@ -16,7 +16,11 @@ defmodule SpectreLens.Runtime do
            instances: [map()],
            max_tabs: pos_integer(),
            driver: module(),
-           session_table: :ets.tid()
+           session_table: :ets.tid(),
+           url_policy: keyword(),
+           pending_tabs: map(),
+           caller_monitors: map(),
+           destroyed_targets: MapSet.t(binary())
          }
 
   @doc "Starts a runtime pool."
@@ -34,7 +38,7 @@ defmodule SpectreLens.Runtime do
 
   def new_tab(pid, opts) when is_pid(pid) do
     Telemetry.span([:spectre_lens, :runtime, :new_tab], %{runtime: inspect(pid)}, fn ->
-      result = GenServer.call(pid, {:new_tab, opts}, opts[:timeout] || 30_000)
+      result = GenServer.call(pid, {:new_tab, opts}, :infinity)
       {result, %{result: result}}
     end)
   end
@@ -93,7 +97,10 @@ defmodule SpectreLens.Runtime do
   def save_session(tab, key \\ nil, opts \\ [])
 
   def save_session(%Tab{runtime: runtime} = tab, key, opts) when is_pid(runtime) do
-    GenServer.call(runtime, {:save_session, tab, key, opts}, opts[:timeout] || 30_000)
+    with {:ok, key} <- save_key(tab, key),
+         {:ok, captured} <- SpectreLens.Page.session_snapshot(tab, opts) do
+      GenServer.call(runtime, {:store_captured_session, key, captured, opts})
+    end
   end
 
   def save_session(%Tab{}, _key, _opts), do: {:error, :missing_runtime}
@@ -108,11 +115,21 @@ defmodule SpectreLens.Runtime do
     driver = SpectreLens.Protocol.driver(opts)
     max_tabs = effective_max_tabs_per_instance(driver, opts)
     session_table = :ets.new(:spectre_lens_sessions, [:set, :protected, :compressed])
+    url_policy = SpectreLens.URLPolicy.take_options(opts)
 
     case start_instances(instance_count, opts) do
       {:ok, instances} ->
         {:ok,
-         %{instances: instances, max_tabs: max_tabs, driver: driver, session_table: session_table}}
+         %{
+           instances: instances,
+           max_tabs: max_tabs,
+           driver: driver,
+           session_table: session_table,
+           url_policy: url_policy,
+           pending_tabs: %{},
+           caller_monitors: %{},
+           destroyed_targets: MapSet.new()
+         }}
 
       {:error, reason, started} ->
         cleanup(started)
@@ -121,19 +138,13 @@ defmodule SpectreLens.Runtime do
   end
 
   @impl GenServer
-  def handle_call({:new_tab, opts}, _from, state) do
-    with {:ok, opts} <- prepare_session_opts(state.session_table, opts),
-         {:ok, instance} <- available_instance(state, opts),
-         {:ok, tab} <- open_tab(instance, opts),
-         {:ok, tab} <- maybe_navigate(tab, opts),
-         {:ok, tab} <- maybe_restore_session(tab, opts) do
-      instances = bump_instance_counts(state.instances, instance.id, tab, 1)
-      {:reply, {:ok, tab}, %{state | instances: instances}}
-    else
-      {:error, {:navigation_failed, tab, reason}} ->
-        SpectreLens.Protocol.close_tab(tab)
-        {:reply, {:error, reason}, state}
+  def handle_call({:new_tab, opts}, from, state) do
+    opts = Keyword.merge(state.url_policy, opts)
 
+    with {:ok, opts} <- prepare_session_opts(state.session_table, opts),
+         {:ok, instance} <- available_instance(state, opts) do
+      {:noreply, start_tab_worker(state, from, instance, opts)}
+    else
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
@@ -162,25 +173,23 @@ defmodule SpectreLens.Runtime do
     {:reply, result, state}
   end
 
-  def handle_call({:save_session, tab, key, opts}, _from, state) do
-    result =
-      with {:ok, key} <- save_key(tab, key),
-           {:ok, captured} <- SpectreLens.Page.session_snapshot(tab, opts) do
-        merge_or_replace_session(state.session_table, key, captured, opts)
-      end
-
+  def handle_call({:store_captured_session, key, captured, opts}, _from, state) do
+    result = merge_or_replace_session(state.session_table, key, captured, opts)
     {:reply, result, state}
   end
 
   @impl GenServer
   def handle_cast({:release_tab, tab}, state) do
-    Telemetry.emit([:spectre_lens, :runtime, :tab_released], %{}, %{
-      instance_id: tab.instance_id,
-      target_id: tab.target_id
-    })
+    {instances, released?} = release_registered_tab(state.instances, tab)
 
-    {:noreply,
-     %{state | instances: bump_instance_counts(state.instances, tab.instance_id, tab, -1)}}
+    if released? do
+      Telemetry.emit([:spectre_lens, :runtime, :tab_released], %{}, %{
+        instance_id: tab.instance_id,
+        target_id: tab.target_id
+      })
+    end
+
+    {:noreply, %{state | instances: instances}}
   end
 
   @impl GenServer
@@ -188,10 +197,91 @@ defmodule SpectreLens.Runtime do
     {:noreply, state}
   end
 
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    case Map.pop(state.pending_tabs, ref) do
+      {nil, _pending_tabs} ->
+        {:noreply, state}
+
+      {pending, pending_tabs} ->
+        Process.demonitor(ref, [:flush])
+        Process.demonitor(pending.caller_monitor, [:flush])
+
+        state = %{
+          state
+          | pending_tabs: pending_tabs,
+            caller_monitors: Map.delete(state.caller_monitors, pending.caller_monitor),
+            instances: release_reservation(state.instances, pending.instance_id, pending.reservation)
+        }
+
+        pending =
+          if pending.caller_alive? and Process.alive?(elem(pending.from, 0)) do
+            pending
+          else
+            %{pending | caller_alive?: false}
+          end
+
+        {state, result} = reject_destroyed_target(state, result)
+        {:noreply, finish_tab_worker(state, pending, result)}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    cond do
+      pending = Map.get(state.pending_tabs, ref) ->
+        state = drop_failed_worker(state, ref, pending)
+
+        if pending.caller_alive? do
+          GenServer.reply(pending.from, {:error, {:tab_worker_down, reason}})
+        end
+
+        {:noreply, state}
+
+      task_ref = Map.get(state.caller_monitors, ref) ->
+        pending_tabs = mark_caller_dead(state.pending_tabs, task_ref)
+
+        {:noreply,
+         %{
+           state
+           | pending_tabs: pending_tabs,
+             caller_monitors: Map.delete(state.caller_monitors, ref)
+         }}
+
+      true ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {:spectre_lens_cdp_event, "Target.targetDestroyed", _session_id,
+         %{"targetId" => target_id}},
+        state
+      ) do
+    {instances, tabs} = release_target(state.instances, target_id)
+    Enum.each(tabs, &SpectreLens.CDP.RequestGuard.target_closed(&1.request_guard))
+
+    destroyed_targets =
+      if tabs == [] and map_size(state.pending_tabs) > 0 do
+        remember_destroyed_target(state.destroyed_targets, target_id)
+      else
+        state.destroyed_targets
+      end
+
+    {:noreply,
+     %{state | instances: instances, destroyed_targets: destroyed_targets}}
+  end
+
+  def handle_info({:EXIT, pid, reason}, state) do
+    case Enum.find(state.instances, &(Map.get(&1, :conn) == pid)) do
+      nil -> {:noreply, state}
+      instance -> {:stop, {:connection_down, instance.id, reason}, state}
+    end
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl GenServer
   def terminate(_reason, state) do
+    shutdown_pending_workers(state.pending_tabs)
     cleanup(state.instances)
     :ok
   end
@@ -208,11 +298,141 @@ defmodule SpectreLens.Runtime do
     end
   end
 
+  @spec start_tab_worker(state(), GenServer.from(), map(), keyword()) :: state()
+  defp start_tab_worker(state, from, instance, opts) do
+    reservation = make_ref()
+    runtime = self()
+    task = Task.async(fn -> setup_tab(instance, opts, runtime) end)
+    caller_monitor = Process.monitor(elem(from, 0))
+
+    pending = %{
+      task: task,
+      from: from,
+      caller_monitor: caller_monitor,
+      caller_alive?: true,
+      instance_id: instance.id,
+      reservation: reservation
+    }
+
+    %{
+      state
+      | instances: reserve_instance(state.instances, instance.id, reservation, opts),
+        pending_tabs: Map.put(state.pending_tabs, task.ref, pending),
+        caller_monitors: Map.put(state.caller_monitors, caller_monitor, task.ref)
+    }
+  end
+
+  @spec setup_tab(map(), keyword(), pid()) :: {:ok, Tab.t()} | {:error, term()}
+  defp setup_tab(instance, opts, runtime) do
+    case open_tab(instance, opts) do
+      {:ok, tab} -> finish_tab_setup(tab, opts, runtime)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec finish_tab_setup(Tab.t(), keyword(), pid()) :: {:ok, Tab.t()} | {:error, term()}
+  defp finish_tab_setup(tab, opts, runtime) do
+    result =
+      SpectreLens.Errors.safe(:tab_setup, fn ->
+        with {:ok, tab} <- maybe_navigate(tab, opts),
+             {:ok, tab} <- maybe_restore_session(tab, opts) do
+          {:ok, %{tab | runtime: runtime}}
+        end
+      end)
+
+    case result do
+      {:ok, _tab} = ok ->
+        ok
+
+      {:error, {:navigation_failed, _tab, reason}} ->
+        close_setup_tab(tab)
+        {:error, reason}
+
+      {:error, reason} ->
+        close_setup_tab(tab)
+        {:error, reason}
+    end
+  end
+
+  @spec close_setup_tab(Tab.t()) :: :ok
+  defp close_setup_tab(tab) do
+    SpectreLens.Errors.safe(:close_setup_tab, fn ->
+      SpectreLens.Protocol.close_tab(%{tab | runtime: nil})
+    end)
+
+    :ok
+  end
+
+  @spec finish_tab_worker(state(), map(), {:ok, Tab.t()} | {:error, term()}) :: state()
+  defp finish_tab_worker(state, %{caller_alive?: true} = pending, {:ok, tab}) do
+    GenServer.reply(pending.from, {:ok, tab})
+    %{state | instances: register_tab(state.instances, pending.instance_id, tab)}
+  end
+
+  defp finish_tab_worker(state, %{caller_alive?: true} = pending, {:error, reason}) do
+    GenServer.reply(pending.from, {:error, reason})
+    state
+  end
+
+  defp finish_tab_worker(state, %{caller_alive?: false}, {:ok, tab}) do
+    close_setup_tab(tab)
+    state
+  end
+
+  defp finish_tab_worker(state, %{caller_alive?: false}, {:error, _reason}), do: state
+
+  @spec reject_destroyed_target(state(), {:ok, Tab.t()} | {:error, term()}) ::
+          {state(), {:ok, Tab.t()} | {:error, term()}}
+  defp reject_destroyed_target(state, {:ok, %Tab{target_id: target_id} = tab} = result)
+       when is_binary(target_id) do
+    if MapSet.member?(state.destroyed_targets, target_id) do
+      SpectreLens.CDP.RequestGuard.target_closed(tab.request_guard)
+
+      Task.start(fn -> close_setup_tab(%{tab | request_guard: nil}) end)
+
+      {%{state | destroyed_targets: MapSet.delete(state.destroyed_targets, target_id)},
+       {:error, :target_closed}}
+    else
+      {state, result}
+    end
+  end
+
+  defp reject_destroyed_target(state, result), do: {state, result}
+
+  @spec remember_destroyed_target(MapSet.t(binary()), binary()) :: MapSet.t(binary())
+  defp remember_destroyed_target(targets, target_id) do
+    if MapSet.size(targets) >= 128 do
+      MapSet.new([target_id])
+    else
+      MapSet.put(targets, target_id)
+    end
+  end
+
+  @spec mark_caller_dead(map(), reference()) :: map()
+  defp mark_caller_dead(pending_tabs, task_ref) do
+    case Map.fetch(pending_tabs, task_ref) do
+      {:ok, pending} -> Map.put(pending_tabs, task_ref, %{pending | caller_alive?: false})
+      :error -> pending_tabs
+    end
+  end
+
+  @spec drop_failed_worker(state(), reference(), map()) :: state()
+  defp drop_failed_worker(state, ref, pending) do
+    Process.demonitor(pending.caller_monitor, [:flush])
+
+    %{
+      state
+      | pending_tabs: Map.delete(state.pending_tabs, ref),
+        caller_monitors: Map.delete(state.caller_monitors, pending.caller_monitor),
+        instances: release_reservation(state.instances, pending.instance_id, pending.reservation)
+    }
+  end
+
   @spec open_tab(map(), keyword()) :: {:ok, SpectreLens.Tab.t()} | {:error, term()}
   defp open_tab(instance, opts) do
     tab_opts =
       opts
-      |> Keyword.put(:runtime, self())
+      |> Keyword.put(:runtime, nil)
       |> Keyword.put(:url, "about:blank")
 
     SpectreLens.Protocol.new_tab(instance, tab_opts)
@@ -342,29 +562,51 @@ defmodule SpectreLens.Runtime do
   @spec start_instances(pos_integer(), keyword()) :: {:ok, [map()]} | {:error, term(), [map()]}
   defp start_instances(count, opts) do
     Enum.reduce_while(1..count, {:ok, []}, fn index, {:ok, acc} ->
-      instance_opts =
-        opts
-        |> Keyword.drop([:instances, :max_tabs_per_instance, :port])
-        |> Keyword.put(:id, index)
-        |> maybe_put(:port, port_for(opts, index, count))
+      case start_instance(index, count, opts) do
+        {:ok, instance} ->
+          {:cont, {:ok, [instance | acc]}}
 
-      with {:ok, lightpanda} <- SpectreLens.Lightpanda.start_instance(instance_opts),
-           {:ok, conn} <- Connection.open(lightpanda.endpoint) do
-        instance =
-          lightpanda
-          |> Map.put(:conn, conn)
-          |> Map.put(:driver, SpectreLens.Protocol.driver(opts))
-          |> Map.put(:tabs, 0)
-          |> Map.put(:session_contexts, 0)
-
-        {:cont, {:ok, [instance | acc]}}
-      else
-        {:error, reason} -> {:halt, {:error, reason, acc}}
+        {:error, reason} ->
+          {:halt, {:error, reason, acc}}
       end
     end)
     |> case do
       {:ok, instances} -> {:ok, Enum.reverse(instances)}
       other -> other
+    end
+  end
+
+  @spec start_instance(pos_integer(), pos_integer(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp start_instance(index, count, opts) do
+    instance_opts =
+      opts
+      |> Keyword.drop([:instances, :max_tabs_per_instance, :port])
+      |> Keyword.put(:id, index)
+      |> maybe_put(:port, port_for(opts, index, count))
+
+    with {:ok, lightpanda} <- SpectreLens.Lightpanda.start_instance(instance_opts) do
+      open_instance(lightpanda, opts)
+    end
+  end
+
+  @spec open_instance(map(), keyword()) :: {:ok, map()} | {:error, term()}
+  defp open_instance(lightpanda, opts) do
+    case Connection.open(lightpanda.endpoint) do
+      {:ok, conn} ->
+        :ok = Connection.subscribe_event(conn, "Target.targetDestroyed", nil, self())
+
+        instance =
+          lightpanda
+          |> Map.put(:conn, conn)
+          |> Map.put(:driver, SpectreLens.Protocol.driver(opts))
+          |> Map.put(:tabs, %{})
+          |> Map.put(:reservations, %{})
+
+        {:ok, instance}
+
+      {:error, reason} ->
+        SpectreLens.Lightpanda.stop_instance(lightpanda)
+        {:error, reason}
     end
   end
 
@@ -383,12 +625,12 @@ defmodule SpectreLens.Runtime do
   defp choose_instance(instances, max_tabs, session_tab?) do
     instances
     |> Enum.filter(&instance_available?(&1, max_tabs, session_tab?))
-    |> Enum.min_by(&{&1.session_contexts, &1.tabs}, fn -> nil end)
+    |> Enum.min_by(&{session_context_count(&1), tab_count(&1)}, fn -> nil end)
   end
 
   @spec instance_available?(map(), pos_integer(), boolean()) :: boolean()
   defp instance_available?(instance, max_tabs, session_tab?) do
-    instance.tabs < max_tabs and (not session_tab? or instance.session_contexts < 1)
+    tab_count(instance) < max_tabs and (not session_tab? or session_context_count(instance) < 1)
   end
 
   @spec effective_max_tabs_per_instance(module(), keyword()) :: pos_integer()
@@ -396,27 +638,90 @@ defmodule SpectreLens.Runtime do
 
   defp effective_max_tabs_per_instance(_driver, opts), do: opts[:max_tabs_per_instance] || 8
 
-  @spec bump_instance_counts([map()], term(), Tab.t(), integer()) :: [map()]
-  defp bump_instance_counts(instances, id, tab, delta) do
+  @spec reserve_instance([map()], term(), reference(), keyword()) :: [map()]
+  defp reserve_instance(instances, id, reservation, opts) do
     Enum.map(instances, fn
-      %{id: ^id, tabs: tabs, session_contexts: session_contexts} = instance ->
-        %{
-          instance
-          | tabs: max(tabs + delta, 0),
-            session_contexts: max(session_contexts + session_context_delta(tab, delta), 0)
-        }
+      %{id: ^id} = instance ->
+        session? = Keyword.has_key?(opts, :session_key)
+        %{instance | reservations: Map.put(instance.reservations, reservation, session?)}
 
       instance ->
         instance
     end)
   end
 
-  @spec session_context_delta(Tab.t(), integer()) :: integer()
-  defp session_context_delta(%Tab{browser_context_id: browser_context_id}, delta)
-       when is_binary(browser_context_id),
-       do: delta
+  @spec release_reservation([map()], term(), reference()) :: [map()]
+  defp release_reservation(instances, id, reservation) do
+    Enum.map(instances, fn
+      %{id: ^id} = instance ->
+        %{instance | reservations: Map.delete(instance.reservations, reservation)}
 
-  defp session_context_delta(_tab, _delta), do: 0
+      instance ->
+        instance
+    end)
+  end
+
+  @spec register_tab([map()], term(), Tab.t()) :: [map()]
+  defp register_tab(instances, id, tab) do
+    Enum.map(instances, fn
+      %{id: ^id} = instance -> %{instance | tabs: Map.put(instance.tabs, tab_key(tab), tab)}
+      instance -> instance
+    end)
+  end
+
+  @spec release_registered_tab([map()], Tab.t()) :: {[map()], boolean()}
+  defp release_registered_tab(instances, tab) do
+    key = tab_key(tab)
+
+    Enum.map_reduce(instances, false, fn
+      %{id: id} = instance, released? when id == tab.instance_id ->
+        if Map.has_key?(instance.tabs, key) do
+          {%{instance | tabs: Map.delete(instance.tabs, key)}, true}
+        else
+          {instance, released?}
+        end
+
+      instance, released? ->
+        {instance, released?}
+    end)
+  end
+
+  @spec release_target([map()], binary()) :: {[map()], [Tab.t()]}
+  defp release_target(instances, target_id) do
+    Enum.map_reduce(instances, [], fn instance, released_tabs ->
+      {released, kept} =
+        Enum.split_with(instance.tabs, fn {_key, tab} -> tab.target_id == target_id end)
+
+      {%{instance | tabs: Map.new(kept)}, Enum.map(released, &elem(&1, 1)) ++ released_tabs}
+    end)
+  end
+
+  @spec tab_count(map()) :: non_neg_integer()
+  defp tab_count(instance), do: map_size(instance.tabs) + map_size(instance.reservations)
+
+  @spec session_context_count(map()) :: non_neg_integer()
+  defp session_context_count(instance) do
+    active = Enum.count(instance.tabs, fn {_key, tab} -> is_binary(tab.browser_context_id) end)
+    reserved = Enum.count(instance.reservations, fn {_ref, session?} -> session? end)
+    active + reserved
+  end
+
+  @spec tab_key(Tab.t()) :: term()
+  defp tab_key(%Tab{target_id: target_id}) when is_binary(target_id), do: {:target, target_id}
+  defp tab_key(%Tab{session_id: session_id}) when is_binary(session_id), do: {:session, session_id}
+  defp tab_key(%Tab{} = tab), do: {:tab, :erlang.phash2(tab)}
+
+  @spec shutdown_pending_workers(map()) :: :ok
+  defp shutdown_pending_workers(pending_tabs) do
+    Enum.each(pending_tabs, fn {_ref, pending} ->
+      case Task.shutdown(pending.task, 5_000) do
+        {:ok, {:ok, tab}} -> close_setup_tab(tab)
+        _ -> :ok
+      end
+    end)
+
+    :ok
+  end
 
   @spec cleanup([map()]) :: :ok
   defp cleanup(instances) do

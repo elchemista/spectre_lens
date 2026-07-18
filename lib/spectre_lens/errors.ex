@@ -197,5 +197,9 @@ defmodule SpectreLens.Errors do
     "The site did not expose llms.txt at the discovered locations. Pass a direct /llms.txt URL if it lives elsewhere."
   end
 
+  defp generic_hint(:lightpanda_not_found) do
+    "Install Lightpanda explicitly with mix spectre.lens.install or pass binary: \"/path/to/lightpanda\" to SpectreLens.open/1."
+  end
+
   defp generic_hint(_type), do: nil
 end

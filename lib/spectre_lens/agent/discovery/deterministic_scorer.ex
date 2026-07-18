@@ -16,6 +16,9 @@ defmodule SpectreLens.Discovery.DeterministicScorer do
   )
 
   @impl true
+  @doc false
+  @spec score_candidate(Candidate.t(), map(), keyword()) ::
+          {:ok, Candidate.t()} | {:skip, term()} | {:error, term()}
   def score_candidate(%Candidate{url: url} = candidate, context, opts) when is_binary(url) do
     goal_tokens = goal_tokens(context[:goal] || "")
     text = normalize(candidate.text || "")
@@ -68,6 +71,8 @@ defmodule SpectreLens.Discovery.DeterministicScorer do
   def score_candidate(%Candidate{}, _context, _opts), do: {:skip, :missing_url}
 
   @impl true
+  @doc false
+  @spec rank_candidates([Candidate.t()], map(), keyword()) :: {:ok, [Candidate.t()]}
   def rank_candidates(candidates, _context, _opts) do
     ranked =
       candidates
@@ -196,6 +201,7 @@ defmodule SpectreLens.Discovery.DeterministicScorer do
     "/" <> Enum.join(path, "/")
   end
 
+  @spec pattern_segment(binary()) :: binary()
   defp pattern_segment(segment) do
     cond do
       String.match?(segment, ~r/^\d+$/) -> ":id"
@@ -204,10 +210,8 @@ defmodule SpectreLens.Discovery.DeterministicScorer do
     end
   end
 
-  defp compact_path_pattern(segments) when length(segments) > 2 do
-    Enum.take(segments, 2) ++ [":..."]
-  end
-
+  @spec compact_path_pattern([binary()]) :: [binary()]
+  defp compact_path_pattern([first, second, _third | _rest]), do: [first, second, ":..."]
   defp compact_path_pattern(segments), do: segments
 
   @spec normalize(binary()) :: binary()

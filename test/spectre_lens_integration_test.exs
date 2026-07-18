@@ -149,7 +149,7 @@ defmodule SpectreLensIntegrationTest do
   test "actions return element errors for bad refs" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
     {:ok, server} = start_http_server("<html><body><button id=\"ok\">OK</button></body></html>")
-    assert {:ok, lens} = SpectreLens.open(instances: 1)
+    assert {:ok, lens} = SpectreLens.open(instances: 1, network_policy: :any)
 
     try do
       assert {:ok, tab} = SpectreLens.new_tab(lens, url: "http://127.0.0.1:#{server.port}/")
@@ -186,7 +186,11 @@ defmodule SpectreLensIntegrationTest do
 
     try do
       assert {:ok, outline} =
-               SpectreLens.outline(url: "http://127.0.0.1:#{server.port}/", detailed: true)
+               SpectreLens.outline(
+                 url: "http://127.0.0.1:#{server.port}/",
+                 detailed: true,
+                 network_policy: :any
+               )
 
       assert outline.text =~ "Temporary outline"
       assert Enum.any?(outline.sections, &(&1.purpose == :hero))
@@ -198,7 +202,7 @@ defmodule SpectreLensIntegrationTest do
   test "copies saved cookies and web storage into isolated session tabs" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
     {:ok, server} = start_http_server("<html><body>session test</body></html>")
-    assert {:ok, lens} = SpectreLens.open(instances: 2)
+    assert {:ok, lens} = SpectreLens.open(instances: 2, network_policy: :any)
 
     url = "http://127.0.0.1:#{server.port}/"
 
@@ -289,7 +293,7 @@ defmodule SpectreLensIntegrationTest do
       </html>
       """)
 
-    assert {:ok, lens} = SpectreLens.open(instances: 1)
+    assert {:ok, lens} = SpectreLens.open(instances: 1, network_policy: :any)
 
     try do
       url = "http://127.0.0.1:#{server.port}/"
@@ -348,7 +352,7 @@ defmodule SpectreLensIntegrationTest do
         """
       })
 
-    assert {:ok, lens} = SpectreLens.open(instances: 1)
+    assert {:ok, lens} = SpectreLens.open(instances: 1, network_policy: :any)
 
     try do
       root = "http://127.0.0.1:#{server.port}/"
@@ -418,7 +422,8 @@ defmodule SpectreLensIntegrationTest do
                  goal: "api keys",
                  max_depth: 1,
                  max_pages: 3,
-                 timeout: @real_content_timeout
+                 timeout: @real_content_timeout,
+                 network_policy: :any
                )
 
       assert discovery.root_url == root
@@ -430,6 +435,65 @@ defmodule SpectreLensIntegrationTest do
       assert Enum.any?(discovery.forms, &(Map.get(&1, :source_url) == root))
     after
       stop_http_server(server)
+    end
+  end
+
+  test "failed navigation and repeated close do not corrupt tab capacity" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    {:ok, server} = start_http_server("<html><body>capacity</body></html>")
+    assert {:ok, lens} = SpectreLens.open(instances: 1, network_policy: :any)
+    url = "http://127.0.0.1:#{server.port}/"
+
+    try do
+      assert {:ok, first} = SpectreLens.new_tab(lens, url: url)
+      assert :ok = SpectreLens.close_tab(first)
+      _second_close = SpectreLens.close_tab(first)
+
+      assert {:ok, second} = eventually_new_tab(lens, url)
+      assert :ok = SpectreLens.close_tab(second)
+    after
+      SpectreLens.close(lens)
+      stop_http_server(server)
+    end
+  end
+
+  test "an externally closed target releases capacity and stops its guard" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 1)
+
+    try do
+      assert {:ok, first} = SpectreLens.new_tab(lens)
+      assert is_pid(first.request_guard)
+      guard_monitor = Process.monitor(first.request_guard)
+
+      assert {:ok, _result} =
+               SpectreLens.CDP.Connection.send_command(
+                 first.conn,
+                 "Target.closeTarget",
+                 %{targetId: first.target_id},
+                 5_000
+               )
+
+      assert_receive {:DOWN, ^guard_monitor, :process, _pid, :normal}, 5_000
+      assert {:ok, second} = eventually_new_tab(lens, nil)
+      assert :ok = SpectreLens.close_tab(second)
+    after
+      SpectreLens.close(lens)
+    end
+  end
+
+  test "a policy-rejected navigation cleans up its reserved target" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    assert {:ok, lens} = SpectreLens.open(instances: 1)
+
+    try do
+      assert {:error, {:address_not_allowed, "127.0.0.1", {127, 0, 0, 1}}} =
+               SpectreLens.new_tab(lens, url: "http://127.0.0.1/private")
+
+      assert {:ok, tab} = eventually_new_tab(lens, nil)
+      assert :ok = SpectreLens.close_tab(tab)
+    after
+      SpectreLens.close(lens)
     end
   end
 
@@ -448,6 +512,23 @@ defmodule SpectreLensIntegrationTest do
              })
 
     storage
+  end
+
+  defp eventually_new_tab(lens, url, attempts \\ 40)
+
+  defp eventually_new_tab(_lens, _url, 0), do: {:error, :tab_capacity_not_released}
+
+  defp eventually_new_tab(lens, url, attempts) do
+    opts = if is_binary(url), do: [url: url], else: []
+
+    case SpectreLens.new_tab(lens, opts) do
+      {:error, :tab_capacity_exceeded} ->
+        Process.sleep(50)
+        eventually_new_tab(lens, url, attempts - 1)
+
+      result ->
+        result
+    end
   end
 
   defp url_origin(url) do

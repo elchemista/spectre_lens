@@ -8,7 +8,7 @@ defmodule SpectreLens.LlmsTxt do
   return structured links plus raw Markdown.
   """
 
-  alias SpectreLens.Telemetry
+  alias SpectreLens.{Telemetry, URLPolicy}
 
   defstruct [
     :url,
@@ -19,6 +19,7 @@ defmodule SpectreLens.LlmsTxt do
     :info,
     :content,
     :full_content,
+    trust: :untrusted,
     sections: [],
     links: [],
     warnings: []
@@ -53,6 +54,7 @@ defmodule SpectreLens.LlmsTxt do
           info: binary() | nil,
           content: binary() | nil,
           full_content: binary() | nil,
+          trust: :untrusted,
           sections: [section()],
           links: [link()],
           warnings: [term()]
@@ -68,6 +70,7 @@ defmodule SpectreLens.LlmsTxt do
   Options:
     * `:full?` - also fetch `llms-full.txt` / `llms-ctx-full.txt`, default `false`
     * `:timeout` - HTTP timeout in milliseconds
+    * `:max_redirects` - maximum number of validated HTTP redirects, default `5`
     * `:max_bytes` - maximum accepted response body size
     * `:fetcher` - custom function `(url, opts -> {:ok, body} | {:error, reason})`
   """
@@ -121,12 +124,24 @@ defmodule SpectreLens.LlmsTxt do
   @doc "Returns Markdown context to feed an agent from a parsed `llms.txt` document."
   @spec to_context(t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def to_context(%__MODULE__{} = doc, opts \\ []) do
-    case opts[:prefer] || :full do
-      :full -> preferred_context(doc.full_content, doc.content)
-      :index -> preferred_context(doc.content, nil)
-      :both -> both_context(doc)
-      other -> {:error, {:invalid_llms_context_preference, other}}
+    with {:ok, content} <- context_content(doc, opts[:prefer] || :full) do
+      format_context(content, doc, opts[:raw?] not in [false, nil])
     end
+  end
+
+  @spec context_content(t(), term()) :: {:ok, binary()} | {:error, term()}
+  defp context_content(doc, :full), do: preferred_context(doc.full_content, doc.content)
+  defp context_content(doc, :index), do: preferred_context(doc.content, nil)
+  defp context_content(doc, :both), do: both_context(doc)
+
+  defp context_content(_doc, other),
+    do: {:error, {:invalid_llms_context_preference, other}}
+
+  @spec format_context(binary(), t(), boolean()) :: {:ok, binary()}
+  defp format_context(content, _doc, true), do: {:ok, content}
+
+  defp format_context(content, doc, false) do
+    {:ok, SpectreLens.UntrustedContent.wrap(content, doc.full_url || doc.url)}
   end
 
   @doc "Returns candidate index and full-context URLs for a site or direct file URL."
@@ -161,15 +176,17 @@ defmodule SpectreLens.LlmsTxt do
 
   @spec do_discover_from_page(binary(), [page_link()], keyword()) :: {:ok, t()} | {:error, term()}
   defp do_discover_from_page(page_url, page_links, opts) do
+    page_opts = Keyword.put(opts, :llms_origin, page_url)
+
     candidates =
       page_url
-      |> metadata_candidates(page_links)
-      |> Kernel.++(header_candidates(page_url, opts))
+      |> metadata_candidates(page_links, page_opts)
+      |> Kernel.++(header_candidates(page_url, page_opts))
       |> Enum.uniq()
 
     case candidates do
       [] -> {:error, {:llms_txt_not_found, :no_page_metadata_or_header, []}}
-      urls -> discover_first(urls, opts)
+      urls -> discover_first(urls, page_opts)
     end
   end
 
@@ -221,17 +238,17 @@ defmodule SpectreLens.LlmsTxt do
   defp fetch(url, opts) do
     fetcher = Keyword.get(opts, :fetcher, &default_fetch/2)
     max_bytes = Keyword.get(opts, :max_bytes, @default_max_bytes)
+    policy_opts = URLPolicy.take_options(opts)
 
-    with {:ok, body} <- fetcher.(url, opts) do
+    with {:ok, url} <- URLPolicy.validate(url, policy_opts),
+         {:ok, body} <- fetcher.(url, opts) do
       validate_body(body, max_bytes)
     end
   end
 
   @spec default_fetch(binary(), keyword()) :: fetch_result()
   defp default_fetch(url, opts) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    case Req.get(url, retry: false, receive_timeout: timeout) do
+    case safe_request(:get, url, opts) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         {:ok, body_to_binary(body)}
 
@@ -243,12 +260,13 @@ defmodule SpectreLens.LlmsTxt do
     end
   end
 
-  @spec metadata_candidates(binary(), [page_link()]) :: [binary()]
-  defp metadata_candidates(page_url, page_links) do
+  @spec metadata_candidates(binary(), [page_link()], keyword()) :: [binary()]
+  defp metadata_candidates(page_url, page_links, opts) do
     page_links
     |> Enum.flat_map(&metadata_href/1)
     |> Enum.filter(&llms_url?/1)
     |> Enum.map(&resolve_url(page_url, &1))
+    |> maybe_same_origin(page_url, opts)
   end
 
   @spec metadata_href(page_link()) :: [binary()]
@@ -265,6 +283,7 @@ defmodule SpectreLens.LlmsTxt do
       page_url
       |> fetch_link_header(opts)
       |> parse_link_header(page_url)
+      |> maybe_same_origin(page_url, opts)
     else
       []
     end
@@ -274,17 +293,18 @@ defmodule SpectreLens.LlmsTxt do
   defp fetch_link_header(page_url, opts) do
     header_fetcher = Keyword.get(opts, :header_fetcher, &default_header_fetch/2)
 
-    with {:ok, headers} <- header_fetcher.(page_url, opts) do
+    with {:ok, page_url} <- URLPolicy.validate(page_url, URLPolicy.take_options(opts)),
+         {:ok, headers} <- header_fetcher.(page_url, opts) do
       get_header(headers, "link")
+    else
+      _ -> nil
     end
   end
 
   @spec default_header_fetch(binary(), keyword()) :: {:ok, term()} | {:error, term()}
   defp default_header_fetch(page_url, opts) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    case Req.request(method: :head, url: page_url, retry: false, receive_timeout: timeout) do
-      {:ok, %{status: status, headers: headers}} when status in 200..399 -> {:ok, headers}
+    case safe_request(:head, page_url, opts) do
+      {:ok, %{status: status, headers: headers}} when status in 200..299 -> {:ok, headers}
       {:ok, %{status: status}} -> {:error, {:http_status, status}}
       {:error, reason} -> {:error, reason}
     end
@@ -321,6 +341,88 @@ defmodule SpectreLens.LlmsTxt do
     |> Regex.scan(header)
     |> Enum.filter(fn [_, href, rel] -> llms_url?(href) or llms_rel?(rel) end)
     |> Enum.map(fn [_, href, _rel] -> resolve_url(page_url, href) end)
+  end
+
+  @spec maybe_same_origin([binary()], binary(), keyword()) :: [binary()]
+  defp maybe_same_origin(urls, page_url, opts) do
+    if Keyword.get(opts, :allow_cross_origin_llms?, false) do
+      urls
+    else
+      Enum.filter(urls, &URLPolicy.same_origin?(page_url, &1))
+    end
+  end
+
+  @spec safe_request(:get | :head, binary(), keyword()) :: {:ok, Req.Response.t()} | {:error, term()}
+  defp safe_request(method, url, opts) do
+    case Keyword.get(opts, :max_redirects, 5) do
+      redirects when is_integer(redirects) and redirects >= 0 ->
+        do_safe_request(method, url, opts, redirects)
+
+      redirects ->
+        {:error, {:invalid_max_redirects, redirects}}
+    end
+  end
+
+  @spec do_safe_request(:get | :head, binary(), keyword(), non_neg_integer()) ::
+          {:ok, Req.Response.t()} | {:error, term()}
+  defp do_safe_request(method, url, opts, redirects_left) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+    with {:ok, url} <- URLPolicy.validate(url, URLPolicy.take_options(opts)),
+         {:ok, response} <-
+           Req.request(
+             method: method,
+             url: url,
+             redirect: false,
+             retry: false,
+             receive_timeout: timeout
+           ) do
+      follow_redirect(response, method, url, opts, redirects_left)
+    end
+  end
+
+  @spec follow_redirect(Req.Response.t(), :get | :head, binary(), keyword(), non_neg_integer()) ::
+          {:ok, Req.Response.t()} | {:error, term()}
+  defp follow_redirect(%{status: status} = response, method, url, opts, redirects_left)
+       when status in 300..399 do
+    cond do
+      redirects_left == 0 ->
+        {:error, :too_many_redirects}
+
+      location = get_header(response.headers, "location") ->
+        with {:ok, redirected_url} <- resolve_redirect(url, location),
+             :ok <- validate_redirect_origin(redirected_url, opts) do
+          do_safe_request(method, redirected_url, opts, redirects_left - 1)
+        end
+
+      true ->
+        {:error, {:redirect_without_location, status}}
+    end
+  end
+
+  defp follow_redirect(response, _method, _url, _opts, _redirects_left), do: {:ok, response}
+
+  @spec resolve_redirect(binary(), binary()) :: {:ok, binary()} | {:error, term()}
+  defp resolve_redirect(base_url, location) do
+    {:ok, base_url |> URI.parse() |> URI.merge(location) |> URI.to_string()}
+  rescue
+    _ -> {:error, {:invalid_redirect, location}}
+  end
+
+  @spec validate_redirect_origin(binary(), keyword()) :: :ok | {:error, term()}
+  defp validate_redirect_origin(redirected_url, opts) do
+    origin = Keyword.get(opts, :llms_origin)
+
+    cond do
+      is_nil(origin) or Keyword.get(opts, :allow_cross_origin_llms?, false) ->
+        :ok
+
+      URLPolicy.same_origin?(origin, redirected_url) ->
+        :ok
+
+      true ->
+        {:error, {:cross_origin_llms_redirect, URLPolicy.sanitize(redirected_url)}}
+    end
   end
 
   @spec llms_url?(binary()) :: boolean()

@@ -16,7 +16,9 @@ defmodule SpectreLens.Tab do
           session_id: binary(),
           browser_context_id: binary() | nil,
           session_key: term(),
-          endpoint: binary() | nil
+          endpoint: binary() | nil,
+          url_policy: keyword(),
+          request_guard: pid() | nil
         }
 
   defstruct [
@@ -28,6 +30,8 @@ defmodule SpectreLens.Tab do
     :session_id,
     :browser_context_id,
     :session_key,
-    :endpoint
+    :endpoint,
+    :request_guard,
+    url_policy: []
   ]
 end

@@ -10,8 +10,9 @@ defmodule SpectreLens.PageMap do
           description: binary(),
           regions: [SpectreLens.Region.t()],
           warnings: [term()],
-          source: :dom | :semantic_tree | atom()
+          source: :dom | :semantic_tree | atom(),
+          trust: :untrusted
         }
 
-  defstruct description: "", regions: [], warnings: [], source: :dom
+  defstruct description: "", regions: [], warnings: [], source: :dom, trust: :untrusted
 end

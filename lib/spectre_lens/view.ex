@@ -21,6 +21,7 @@ defmodule SpectreLens.View do
           llms: SpectreLens.LlmsTxt.t() | nil,
           llms_context: binary() | nil,
           actions: [SpectreLens.ActionRef.t()],
+          trust: :untrusted,
           warnings: [term()],
           errors: [term()]
         }
@@ -39,6 +40,7 @@ defmodule SpectreLens.View do
     llms: nil,
     llms_context: nil,
     actions: [],
+    trust: :untrusted,
     warnings: [],
     errors: []
   ]

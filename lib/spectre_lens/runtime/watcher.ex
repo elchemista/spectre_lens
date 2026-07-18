@@ -9,6 +9,8 @@ defmodule SpectreLens.Watcher do
       {:spectre_lens_watch, watcher_pid, :error, reason}
   """
 
+  @stop_timeout 30_000
+
   defstruct [:pid, :ref, :tab, :include, :notify]
 
   @type t :: %__MODULE__{
@@ -27,19 +29,31 @@ defmodule SpectreLens.Watcher do
     every = opts[:every] || 2_000
     ref = make_ref()
 
-    {:ok, pid} =
-      Task.start_link(fn ->
-        loop(tab, notify, ref, include, every, nil)
-      end)
-
-    {:ok, %__MODULE__{pid: pid, ref: ref, tab: tab, include: include, notify: notify}}
+    with {:ok, pid} <-
+           Task.start(fn ->
+             loop(tab, notify, ref, include, every, nil)
+           end) do
+      {:ok, %__MODULE__{pid: pid, ref: ref, tab: tab, include: include, notify: notify}}
+    end
   end
 
   @doc "Stops a watcher process."
-  @spec stop(t()) :: :ok
-  def stop(%__MODULE__{pid: pid}) do
-    if Process.alive?(pid), do: Process.exit(pid, :normal)
-    :ok
+  @spec stop(t()) :: :ok | {:error, :watcher_stop_timeout}
+  def stop(%__MODULE__{pid: pid, ref: ref}) do
+    if Process.alive?(pid) do
+      monitor = Process.monitor(pid)
+      send(pid, {:spectre_lens_stop, ref})
+
+      receive do
+        {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+      after
+        @stop_timeout ->
+          Process.demonitor(monitor, [:flush])
+          {:error, :watcher_stop_timeout}
+      end
+    else
+      :ok
+    end
   catch
     _, _ -> :ok
   end
@@ -96,8 +110,7 @@ defmodule SpectreLens.Watcher do
   @spec view_hash(SpectreLens.View.t()) :: binary()
   defp view_hash(view) do
     view
-    |> Map.from_struct()
-    |> Jason.encode!()
+    |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
