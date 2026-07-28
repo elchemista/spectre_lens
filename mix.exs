@@ -35,7 +35,7 @@ defmodule SpectreLens.MixProject do
 
   defp deps do
     [
-      {:spectre, github: "elchemista/spectre", ref: "b39b0b1e77d685c0e497cd64d7f16f20d3c1c846"},
+      spectre_dep(),
       {:jason, "~> 1.4"},
       {:req, "~> 0.5"},
       {:websockex, "~> 0.4"},
@@ -45,6 +45,13 @@ defmodule SpectreLens.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  defp spectre_dep do
+    case System.get_env("SPECTRE_PATH") do
+      path when is_binary(path) and path != "" -> {:spectre, path: Path.expand(path)}
+      _other -> {:spectre, github: "elchemista/spectre", branch: "feature/v0.1.2-stack"}
+    end
   end
 
   defp aliases do

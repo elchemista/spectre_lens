@@ -59,18 +59,43 @@ Spectre 0.1.2 can install Lens with a package-local, immutable configuration:
 defmodule MyApp.AI do
   use Spectre.Stack
 
-  install Spectre.Lens do
+  install Spectre.Lens, planner_exposure: [:look, :discover] do
     backend MyApp.BrowserBackend, instances: 2
     policy MyApp.WebPolicy
   end
 end
+
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.AI
+end
 ```
 
-At this milestone the facade declares the selected backend and policy but does
-not advertise executable Operations or start a browser process. The existing
-`SpectreLens.open/1` API remains the explicit runtime boundary until a later
-Stack phase can isolate browser resources and bind them to a concrete Stack
-instance.
+Selecting the Stack automatically binds Lens configuration and its real
+`:open`, `:look`, `:discover`, `:act`, and `:export` Action provider. Operations
+are deterministic-only by default; `planner_exposure:` opts selected operations
+into model planning. A second `use Spectre.Lens` is not required.
+
+Browser processes are isolated caller-owned Stack resources. Start the runtime
+explicitly so binary paths and other runtime-only values never enter the
+compiled definition:
+
+```elixir
+{:ok, stack_runtime} =
+  Spectre.Stack.start_link(MyApp.AI,
+    packages: [
+      lens: [binary: "/opt/lightpanda"]
+    ]
+  )
+
+{:ok, lens_runtime} =
+  Spectre.Lens.runtime(MyApp.Agent, stack_runtime: stack_runtime)
+```
+
+Pass `stack_runtime:` through the Spectre execution options when a staged Lens
+Action is dispatched. Spectre owns policy, approval, idempotency, and the
+effect lifecycle; the declared Lens policy is checked again at the browser
+boundary. Journal records contain operation/outcome metadata but never CDP
+payloads, HTML, cookies, screenshots, or credentials.
 
 ## Quick Start
 
