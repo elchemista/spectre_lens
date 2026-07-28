@@ -430,8 +430,7 @@ defmodule SpectreLensTest do
 
       assert {:error,
               {:llms_txt_not_found,
-               {:llms_txt_not_found,
-                {:cross_origin_llms_redirect, ^redirect_target},
+               {:llms_txt_not_found, {:cross_origin_llms_redirect, ^redirect_target},
                 _index_candidates}, _page_candidates}} =
                LlmsTxt.discover_from_page(
                  page_url,
@@ -442,8 +441,7 @@ defmodule SpectreLensTest do
     end
 
     test "rejects an invalid redirect limit before issuing a request" do
-      assert {:error,
-              {:llms_txt_not_found, {:invalid_max_redirects, -1}, _candidates}} =
+      assert {:error, {:llms_txt_not_found, {:invalid_max_redirects, -1}, _candidates}} =
                LlmsTxt.discover("https://example.com/llms.txt",
                  max_redirects: -1,
                  network_policy: :any

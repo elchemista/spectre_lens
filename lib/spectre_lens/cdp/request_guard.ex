@@ -53,8 +53,7 @@ defmodule SpectreLens.CDP.RequestGuard do
            session_id
          ) do
       {:ok, _} ->
-        {:ok,
-         %{conn: conn, session_id: session_id, policy_opts: policy_opts, monitor: monitor}}
+        {:ok, %{conn: conn, session_id: session_id, policy_opts: policy_opts, monitor: monitor}}
 
       {:error, reason} ->
         Connection.unsubscribe_event(conn, "Fetch.requestPaused", session_id, self())

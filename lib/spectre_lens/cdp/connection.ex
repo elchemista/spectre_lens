@@ -170,7 +170,9 @@ defmodule SpectreLens.CDP.Connection do
       |> maybe_put(:sessionId, session_id)
       |> Jason.encode!()
 
-    pending = Map.put(state.pending, id, %{from: from, ref: ref, method: method, monitor: monitor})
+    pending =
+      Map.put(state.pending, id, %{from: from, ref: ref, method: method, monitor: monitor})
+
     pending_refs = Map.put(state.pending_refs, {from, ref}, id)
     monitors = Map.put(state.monitors, monitor, {:pending, id})
 
@@ -191,8 +193,7 @@ defmodule SpectreLens.CDP.Connection do
     waiter_refs = Map.put(state.waiter_refs, {from, ref}, key)
     monitors = Map.put(state.monitors, monitor, {:waiter, key, from, ref})
 
-    {:ok,
-     %{state | event_waiters: event_waiters, waiter_refs: waiter_refs, monitors: monitors}}
+    {:ok, %{state | event_waiters: event_waiters, waiter_refs: waiter_refs, monitors: monitors}}
   end
 
   def handle_cast({:cancel_event_waiter, from, ref}, state) do

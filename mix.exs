@@ -1,7 +1,7 @@
 defmodule SpectreLens.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.2"
   @source_url "https://github.com/elchemista/spectre_lens"
 
   def project do
@@ -35,6 +35,7 @@ defmodule SpectreLens.MixProject do
 
   defp deps do
     [
+      spectre_dep(),
       {:jason, "~> 1.4"},
       {:req, "~> 0.5"},
       {:websockex, "~> 0.4"},
@@ -44,6 +45,13 @@ defmodule SpectreLens.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  defp spectre_dep do
+    case System.get_env("SPECTRE_PATH") do
+      path when is_binary(path) and path != "" -> {:spectre, path: Path.expand(path)}
+      _other -> {:spectre, github: "elchemista/spectre", branch: "feature/v0.1.2-stack"}
+    end
   end
 
   defp aliases do
@@ -80,7 +88,7 @@ defmodule SpectreLens.MixProject do
         "README.md",
         "LICENSE"
       ],
-      source_ref: "v#{@version}",
+      source_ref: "main",
       source_url: @source_url
     ]
   end

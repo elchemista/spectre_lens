@@ -38,6 +38,7 @@ defmodule SpectreLens.UntrustedContent do
   @doc "Returns true when text already carries the Spectre Lens trust marker."
   @spec wrapped?(binary()) :: boolean()
   def wrapped?(content) when is_binary(content) do
-    String.starts_with?(content, @opening <> "\n") and String.ends_with?(content, "\n" <> @closing)
+    String.starts_with?(content, @opening <> "\n") and
+      String.ends_with?(content, "\n" <> @closing)
   end
 end
