@@ -403,7 +403,10 @@ defmodule SpectreLens do
   programmatic processing. Use this function whenever page-derived text is
   inserted into a model context.
   """
-  @spec agent_context(View.t() | LlmsTxt.t() | Discovery.t() | PageMap.t() | Outline.t(), keyword()) ::
+  @spec agent_context(
+          View.t() | LlmsTxt.t() | Discovery.t() | PageMap.t() | Outline.t(),
+          keyword()
+        ) ::
           {:ok, binary()} | {:error, term()}
   def agent_context(value, opts \\ [])
 

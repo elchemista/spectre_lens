@@ -210,7 +210,8 @@ defmodule SpectreLens.Runtime do
           state
           | pending_tabs: pending_tabs,
             caller_monitors: Map.delete(state.caller_monitors, pending.caller_monitor),
-            instances: release_reservation(state.instances, pending.instance_id, pending.reservation)
+            instances:
+              release_reservation(state.instances, pending.instance_id, pending.reservation)
         }
 
         pending =
@@ -266,8 +267,7 @@ defmodule SpectreLens.Runtime do
         state.destroyed_targets
       end
 
-    {:noreply,
-     %{state | instances: instances, destroyed_targets: destroyed_targets}}
+    {:noreply, %{state | instances: instances, destroyed_targets: destroyed_targets}}
   end
 
   def handle_info({:EXIT, pid, reason}, state) do
@@ -708,7 +708,10 @@ defmodule SpectreLens.Runtime do
 
   @spec tab_key(Tab.t()) :: term()
   defp tab_key(%Tab{target_id: target_id}) when is_binary(target_id), do: {:target, target_id}
-  defp tab_key(%Tab{session_id: session_id}) when is_binary(session_id), do: {:session, session_id}
+
+  defp tab_key(%Tab{session_id: session_id}) when is_binary(session_id),
+    do: {:session, session_id}
+
   defp tab_key(%Tab{} = tab), do: {:tab, :erlang.phash2(tab)}
 
   @spec shutdown_pending_workers(map()) :: :ok

@@ -1,7 +1,7 @@
 defmodule SpectreLens.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.2"
   @source_url "https://github.com/elchemista/spectre_lens"
 
   def project do
@@ -35,6 +35,7 @@ defmodule SpectreLens.MixProject do
 
   defp deps do
     [
+      {:spectre, github: "elchemista/spectre", ref: "b39b0b1e77d685c0e497cd64d7f16f20d3c1c846"},
       {:jason, "~> 1.4"},
       {:req, "~> 0.5"},
       {:websockex, "~> 0.4"},
@@ -80,7 +81,7 @@ defmodule SpectreLens.MixProject do
         "README.md",
         "LICENSE"
       ],
-      source_ref: "v#{@version}",
+      source_ref: "main",
       source_url: @source_url
     ]
   end

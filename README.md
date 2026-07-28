@@ -51,6 +51,27 @@ You can also point Spectre Lens at an existing binary:
 {:ok, lens} = SpectreLens.open(binary: "/path/to/lightpanda")
 ```
 
+## Spectre Stack Integration
+
+Spectre 0.1.2 can install Lens with a package-local, immutable configuration:
+
+```elixir
+defmodule MyApp.AI do
+  use Spectre.Stack
+
+  install Spectre.Lens do
+    backend MyApp.BrowserBackend, instances: 2
+    policy MyApp.WebPolicy
+  end
+end
+```
+
+At this milestone the facade declares the selected backend and policy but does
+not advertise executable Operations or start a browser process. The existing
+`SpectreLens.open/1` API remains the explicit runtime boundary until a later
+Stack phase can isolate browser resources and bind them to a concrete Stack
+instance.
+
 ## Quick Start
 
 ```elixir

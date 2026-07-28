@@ -352,7 +352,8 @@ defmodule SpectreLens.LlmsTxt do
     end
   end
 
-  @spec safe_request(:get | :head, binary(), keyword()) :: {:ok, Req.Response.t()} | {:error, term()}
+  @spec safe_request(:get | :head, binary(), keyword()) ::
+          {:ok, Req.Response.t()} | {:error, term()}
   defp safe_request(method, url, opts) do
     case Keyword.get(opts, :max_redirects, 5) do
       redirects when is_integer(redirects) and redirects >= 0 ->
