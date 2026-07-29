@@ -1,25 +1,26 @@
-defmodule SpectreLens.Protocol.LightpandaCDP do
+defmodule SpectreLens.Protocol.CDP do
   @moduledoc """
-  Spectre Lens protocol driver backed by Lightpanda's CDP endpoint.
+  Browser-neutral protocol backed by Chrome DevTools Protocol.
 
-  This is the default driver. It uses standard CDP for browser primitives and
-  Lightpanda's `LP.*` domain for agent-first page projections.
+  This adapter uses only standard CDP domains and DOM JavaScript fallbacks.
+  Lightpanda-specific extensions live in `SpectreLens.Protocol.Lightpanda`.
   """
 
   @behaviour SpectreLens.Protocol
 
+  alias SpectreLens.CDP.Connection
   alias SpectreLens.Tab
 
   @impl SpectreLens.Protocol
   def new_tab(instance, opts \\ []) do
     opts =
       opts
-      |> Keyword.put(:driver, __MODULE__)
+      |> Keyword.put(:protocol, __MODULE__)
       |> Keyword.put(:runtime, opts[:runtime])
       |> Keyword.put(:instance_id, instance.id)
       |> Keyword.put(:endpoint, instance.endpoint)
 
-    SpectreLens.Page.new(instance.conn, opts)
+    SpectreLens.Page.new(instance.connection, opts)
   end
 
   @impl SpectreLens.Protocol
@@ -95,4 +96,63 @@ defmodule SpectreLens.Protocol.LightpandaCDP do
 
   @impl SpectreLens.Protocol
   def scroll(%Tab{} = tab, opts), do: SpectreLens.Page.scroll(tab, opts)
+
+  @impl SpectreLens.Protocol
+  def capture_session(%Tab{} = tab, opts), do: SpectreLens.Page.session_snapshot(tab, opts)
+
+  @impl SpectreLens.Protocol
+  def restore_session(%Tab{} = tab, session, opts),
+    do: SpectreLens.Page.restore_session(tab, session, opts)
+
+  @impl SpectreLens.Protocol
+  def tab_key(%Tab{target_id: target_id}) when is_binary(target_id),
+    do: {:target, target_id}
+
+  def tab_key(%Tab{session_id: session_id}) when is_binary(session_id),
+    do: {:session, session_id}
+
+  def tab_key(%Tab{id: id}), do: {:tab, id}
+
+  @impl SpectreLens.Protocol
+  def handle_tab_closed(%Tab{} = tab) do
+    SpectreLens.Page.target_closed(tab)
+  end
+
+  @impl SpectreLens.Protocol
+  def subscribe(instance, subscriber) do
+    :ok =
+      Connection.subscribe_event(
+        instance.connection,
+        "Target.targetDestroyed",
+        nil,
+        subscriber
+      )
+
+    Connection.subscribe_event(
+      instance.connection,
+      "Target.detachedFromTarget",
+      nil,
+      subscriber
+    )
+  end
+
+  @impl SpectreLens.Protocol
+  def handle_info(
+        {:spectre_lens_cdp_event, connection, "Target.targetDestroyed", _session_id,
+         %{"targetId" => target_id}},
+        %{connection: connection}
+      ),
+      do: {:tab_closed, {:target, target_id}}
+
+  def handle_info(
+        {:spectre_lens_cdp_event, connection, "Target.detachedFromTarget", _session_id,
+         %{"targetId" => target_id}},
+        %{connection: connection}
+      ),
+      do: {:tab_closed, {:target, target_id}}
+
+  def handle_info({:EXIT, connection, reason}, %{connection: connection}),
+    do: {:instance_down, {:connection_down, reason}}
+
+  def handle_info(_message, _instance), do: :ignore
 end

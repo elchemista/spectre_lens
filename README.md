@@ -1,15 +1,17 @@
 # Spectre Lens
 
-Agent-first Elixir browser lens for Lightpanda.
+Agent-first, backend-neutral browser perception for Elixir.
 
-Spectre Lens controls Lightpanda through CDP, but CDP is only a driver detail.
-The public contract is `SpectreLens.Protocol`: page views, actions, exports,
-page maps, watchers, and agent context. Other browser backends can implement
-the same protocol later.
+Spectre Lens separates browser lifecycle from page semantics. A
+`SpectreLens.Browser` backend starts, connects, monitors, and stops browser
+instances; a `SpectreLens.Protocol` adapter implements tabs, views, actions,
+exports, sessions, and events. Lightpanda is the default local backend, not a
+dependency of the Lens runtime contract.
 
 ## Features
 
-- Start one or more Lightpanda instances and balance tabs across them.
+- Start local browser processes or connect to external endpoints and balance
+  tabs according to backend capacity.
 - Navigate, click, fill, submit, scroll, wait for selectors, and send raw CDP.
 - Extract agent-readable views: markdown, HTML, semantic tree, forms, links,
   structured data, interactive elements, and action refs.
@@ -35,15 +37,22 @@ def deps do
 end
 ```
 
-Install or inspect the Lightpanda binary:
+Install or inspect the optional local Lightpanda binary:
 
 ```sh
 mix spectre.lens.install --channel nightly --out ~/.local/bin --force
 mix spectre.lens.doctor
 ```
 
+The installer resolves the platform asset from Lightpanda's official GitHub
+release metadata, requires its published SHA-256 digest, validates the browser
+version, and atomically replaces the destination only after every check passes.
+For a trusted mirror, pass both `--url` and `--sha256`.
+
 Starting a runtime never downloads a browser binary. Provision Lightpanda
 yourself or run the installer task explicitly before `SpectreLens.open/1`.
+Lens 0.1.3 requires Lightpanda `1.0.0-nightly.8362` or newer when the local
+Lightpanda backend is selected.
 
 You can also point Spectre Lens at an existing binary:
 
@@ -51,16 +60,22 @@ You can also point Spectre Lens at an existing binary:
 {:ok, lens} = SpectreLens.open(binary: "/path/to/lightpanda")
 ```
 
+The path can also be configured with `config :spectre_lens,
+:lightpanda_path, "/path/to/lightpanda"` or `LIGHTPANDA_PATH`.
+
 ## Spectre Stack Integration
 
-Spectre 0.1.2 can install Lens with a package-local, immutable configuration:
+Spectre 0.1.3 can install Lens with a package-local, immutable configuration:
 
 ```elixir
 defmodule MyApp.AI do
   use Spectre.Stack
 
   install Spectre.Lens, planner_exposure: [:look, :discover] do
-    backend MyApp.BrowserBackend, instances: 2
+    backend SpectreLens.Browsers.Lightpanda,
+      instances: 2,
+      protocol: SpectreLens.Protocol.Lightpanda
+
     policy MyApp.WebPolicy
   end
 end
@@ -96,6 +111,12 @@ Action is dispatched. Spectre owns policy, approval, idempotency, and the
 effect lifecycle; the declared Lens policy is checked again at the browser
 boundary. Journal records contain operation/outcome metadata but never CDP
 payloads, HTML, cookies, screenshots, or credentials.
+
+The `:open` Action returns a portable `%SpectreLens.TabRef{}`. Subsequent
+`:look`, `:act`, and `:export` Actions accept that reference and resolve the
+live `%SpectreLens.Tab{}` from the explicitly supplied runtime. Connection and
+request-guard PIDs therefore never enter Spectre State or a checkpointed
+`Spectre.Run`.
 
 ## Quick Start
 
@@ -138,7 +159,7 @@ The default `network_policy: :public` is designed for agent-controlled URLs. It
 allows only absolute HTTP(S) URLs, rejects embedded credentials and non-standard
 ports, resolves hostnames before use, and blocks loopback, private, link-local,
 reserved, multicast, and common cloud-metadata destinations. With the built-in
-CDP driver, request interception applies the same policy to redirects and page
+CDP protocol, request interception applies the same policy to redirects and page
 subrequests.
 
 Local development servers require an explicit opt-out:
@@ -168,13 +189,53 @@ email, CSRF, checkbox, and selected-option values. Telemetry uses an allowlist
 of structural metadata and never includes CDP results, HTML, cookies, storage,
 screenshots, PDFs, or exception payloads.
 
-## Lightpanda Runtime Model
+## Browser Backends and Protocols
 
-Spectre Lens currently ships with the Lightpanda CDP driver. Chrome, WebDriver
-BiDi, MCP, or another browser backend could implement `SpectreLens.Protocol`
-later, but they are not included today.
+The two adapter layers are deliberately independent:
 
-With the current Lightpanda driver:
+| Layer | Owns | Built-in adapters |
+| --- | --- | --- |
+| `SpectreLens.Browser` | allocation, endpoint connection, health, capacity, shutdown | `SpectreLens.Browsers.Lightpanda`, `SpectreLens.Browsers.RemoteCDP` |
+| `SpectreLens.Protocol` | tabs, navigation, projections, actions, exports, sessions, events | `SpectreLens.Protocol.Lightpanda`, `SpectreLens.Protocol.CDP` |
+
+The generic CDP protocol uses standard CDP domains and DOM JavaScript only.
+The Lightpanda protocol delegates normal CDP operations to it and optimizes
+markdown, semantic trees, interactive elements, and structured data through
+the current `LP.*` domain. A Playwright, WebDriver BiDi, ExGram bridge, ExWapp
+bridge, or hosted browser can be added without changing the runtime scheduler:
+implement the backend contract, the protocol contract, or both.
+
+Connect to an already-running CDP service without giving Lens ownership of its
+process:
+
+```elixir
+{:ok, lens} =
+  SpectreLens.open(
+    backend: SpectreLens.Browsers.RemoteCDP,
+    protocol: SpectreLens.Protocol.CDP,
+    endpoint: "http://127.0.0.1:9222",
+    max_tabs_per_instance: 8
+  )
+```
+
+Closing this runtime closes only its CDP connection. It never terminates the
+external browser. `endpoints: [...]` can provide one endpoint per configured
+instance.
+
+For a new integration, `use SpectreLens.Browser.Adapter, protocol: MyProtocol`
+supplies protocol and capacity defaults while the module implements allocation
+and shutdown. `use SpectreLens.Protocol.Adapter` supplies explicit
+`UnsupportedError` defaults for every page capability, so an ExGram, ExWapp, or
+other bridge can implement incrementally without an incomplete runtime
+contract. Lens validates both adapters before allocating any browser resource.
+
+Page inspection remains independently extensible: `SpectreLens.look/2` runs
+`SpectreLens.PlugPipeline`. Add application-wide plugs with
+`config :spectre_lens, :plugs, [...]`, or per-call plugs with `plugs: [...]`.
+This lets integrations enrich or normalize views without modifying the browser
+backend or protocol.
+
+With the local Lightpanda backend:
 
 - `instances: n` starts `n` Lightpanda browser processes.
 - Each Lightpanda instance supports one live tab at a time.
@@ -183,6 +244,8 @@ With the current Lightpanda driver:
   second live CDP target with `TargetAlreadyLoaded`.
 - When all Lightpanda instances already have a live tab, `new_tab/2` returns
   `{:error, :tab_capacity_exceeded}`.
+- Browser exit and CDP connection events are monitored and stop the owning
+  runtime with an instance-scoped reason.
 
 For example, two concurrent tabs need two instances:
 
@@ -205,6 +268,21 @@ To open another page on a single-instance runtime, close the current tab first:
 
 {:ok, next_tab} = SpectreLens.new_tab(lens, url: "https://elchemista.com")
 ```
+
+### Current Lightpanda serve options
+
+Lens 0.1.3 uses the current `serve` interface (`--http-timeout` and
+`--watchdog-ms`; the removed legacy `--timeout` flag is never emitted). It
+binds to loopback by default, disables the metrics endpoint, obeys
+`robots.txt`, and enables Lightpanda's private-network blocking for the default
+public network policy.
+
+Common runtime options include CDP connection/message limits, HTTP
+timeouts/response limits, proxy settings, CA files, cookies, storage/cache,
+subframe and worker controls, logging, user-agent configuration, V8 heap and
+watchdog controls, WebSocket concurrency, and Web Bot Auth. Raw `serve_args`
+may carry future Lightpanda options, but cannot override flags managed by Lens.
+Binding a non-loopback host requires `allow_remote_bind: true`.
 
 ## Browser Sessions
 
@@ -280,8 +358,9 @@ SpectreLens.look(tab,
 )
 ```
 
-`semantic_tree` returns Lightpanda's structured tree. `semantic_text` returns
-Lightpanda's text tree:
+With `SpectreLens.Protocol.Lightpanda`, `semantic_tree` and `semantic_text` use
+Lightpanda's native semantic projection. With `SpectreLens.Protocol.CDP`, they
+are derived from the standard CDP accessibility tree:
 
 ```elixir
 {:ok, view} = SpectreLens.look(tab, include: [:semantic_tree, :semantic_text])

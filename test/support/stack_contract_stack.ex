@@ -4,9 +4,10 @@ defmodule SpectreLens.StackContractStack do
   use Spectre.Stack, id: :lens_contract
 
   install Spectre.Lens, trust: :untrusted do
-    backend(SpectreLens.Protocol.LightpandaCDP,
+    backend(SpectreLens.Browsers.Lightpanda,
       instances: 2,
-      network_policy: :public
+      network_policy: :public,
+      protocol: SpectreLens.Protocol.Lightpanda
     )
 
     policy(SpectreLens.URLPolicy)

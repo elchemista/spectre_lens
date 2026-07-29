@@ -1,6 +1,6 @@
 defmodule SpectreLens.Plugs.Markdown do
   @moduledoc """
-  Adds Lightpanda's Markdown projection when `:markdown` is requested.
+  Adds the active browser protocol's Markdown projection when requested.
 
   Markdown is the default compact representation used by `SpectreLens.look/2`.
   """

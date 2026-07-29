@@ -12,11 +12,17 @@ defmodule SpectreLens.MapHelpers do
   def get(map, key, default \\ nil)
 
   def get(map, key, default) when is_map(map) and is_atom(key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key), default)
+    case Map.fetch(map, key) do
+      {:ok, value} when not is_nil(value) -> value
+      _missing_or_nil -> Map.get(map, Atom.to_string(key), default)
+    end
   end
 
   def get(map, key, default) when is_map(map) and is_binary(key) do
-    Map.get(map, key) || Map.get(map, known_atom_key(key), default)
+    case Map.fetch(map, key) do
+      {:ok, value} when not is_nil(value) -> value
+      _missing_or_nil -> Map.get(map, known_atom_key(key), default)
+    end
   end
 
   def get(_map, _key, default), do: default

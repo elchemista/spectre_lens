@@ -11,6 +11,8 @@ defmodule Spectre.Lens.ActionProvider do
 
   alias Spectre.Action
   alias Spectre.Action.Spec
+  alias SpectreLens.Tab
+  alias SpectreLens.TabRef
 
   @operations [
     {:open, :read, "Open a browser tab for a URL"},
@@ -65,15 +67,29 @@ defmodule Spectre.Lens.ActionProvider do
   @spec execute_operation(atom(), map(), term(), map(), keyword()) ::
           {:ok, term()} | {:error, term()}
   defp execute_operation(:open, args, runtime, config, opts) do
-    with {:ok, url} <- required(args, :url) do
-      SpectreLens.new_tab(runtime, Keyword.merge(policy_opts(config, opts), url: url))
+    with {:ok, url} <- required(args, :url),
+         {:ok, %Tab{} = tab} <-
+           SpectreLens.new_tab(runtime, Keyword.merge(policy_opts(config, opts), url: url)) do
+      case TabRef.new(tab) do
+        {:ok, %TabRef{} = ref} ->
+          {:ok, ref}
+
+        {:error, _reason} = error ->
+          _ = SpectreLens.close_tab(tab)
+          error
+      end
     end
   end
 
   defp execute_operation(:look, args, runtime, config, opts) do
     case arg(args, :tab) do
-      %SpectreLens.Tab{} = tab ->
-        SpectreLens.look(tab, operation_opts(args, config, opts))
+      %TabRef{} = ref ->
+        with {:ok, tab} <- SpectreLens.resolve_tab(runtime, ref) do
+          SpectreLens.look(tab, operation_opts(args, config, opts))
+        end
+
+      %Tab{} ->
+        {:error, :nonportable_lens_tab}
 
       nil ->
         with {:ok, url} <- required(args, :url),
@@ -103,38 +119,41 @@ defmodule Spectre.Lens.ActionProvider do
     end
   end
 
-  defp execute_operation(:act, args, _runtime, config, opts) do
-    with %SpectreLens.Tab{} = tab <- arg(args, :tab),
+  defp execute_operation(:act, args, runtime, config, opts) do
+    with {:ok, tab_ref} <- required(args, :tab),
+         {:ok, %Tab{} = tab} <- resolve_tab(runtime, tab_ref),
          {:ok, action} <- required(args, :action) do
-      SpectreLens.act(tab, action, operation_opts(args, config, opts))
-    else
-      nil -> {:error, :lens_tab_required}
-      invalid -> {:error, {:invalid_lens_action, invalid}}
+      tab
+      |> SpectreLens.act(action, operation_opts(args, config, opts))
+      |> normalize_action_result()
     end
   end
 
-  defp execute_operation(:export, args, _runtime, config, opts) do
-    with %SpectreLens.Tab{} = tab <- arg(args, :tab),
+  defp execute_operation(:export, args, runtime, config, opts) do
+    with {:ok, tab_ref} <- required(args, :tab),
+         {:ok, %Tab{} = tab} <- resolve_tab(runtime, tab_ref),
          {:ok, type} <- required(args, :type) do
       SpectreLens.export(tab, normalize_export_type(type), operation_opts(args, config, opts))
-    else
-      nil -> {:error, :lens_tab_required}
-      invalid -> {:error, {:invalid_lens_export, invalid}}
     end
   end
 
   @spec authorize(map(), Action.t(), Spectre.Context.t()) :: :ok | {:error, term()}
   defp authorize(%{policy: %{module: module, options: options}}, action, ctx) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :authorize, 3) do
-      case module.authorize(action.name, action.args, Keyword.put(options, :context, ctx)) do
-        :ok -> :ok
-        true -> :ok
-        false -> {:error, {:lens_policy_denied, action.name}}
-        {:error, _reason} = error -> error
-        other -> {:error, {:invalid_lens_policy_reply, module, other}}
-      end
-    else
-      :ok
+    cond do
+      not Code.ensure_loaded?(module) ->
+        {:error, {:lens_policy_unavailable, module}}
+
+      function_exported?(module, :authorize, 3) ->
+        case module.authorize(action.name, action.args, Keyword.put(options, :context, ctx)) do
+          :ok -> :ok
+          true -> :ok
+          false -> {:error, {:lens_policy_denied, action.name}}
+          {:error, _reason} = error -> error
+          other -> {:error, {:invalid_lens_policy_reply, module, other}}
+        end
+
+      true ->
+        {:error, {:invalid_lens_policy, module, :authorize}}
     end
   end
 
@@ -173,13 +192,24 @@ defmodule Spectre.Lens.ActionProvider do
   end
 
   @spec schema(atom()) :: map()
-  defp schema(operation) when operation in [:open, :look, :discover] do
+  defp schema(operation) when operation in [:open, :discover] do
     %{
       type: :object,
       required: [:url],
       properties: %{
         url: %{type: :string},
         goal: %{type: :string}
+      }
+    }
+  end
+
+  defp schema(:look) do
+    %{
+      type: :object,
+      required: [],
+      properties: %{
+        url: %{type: :string},
+        tab: %{type: :object}
       }
     }
   end
@@ -195,6 +225,11 @@ defmodule Spectre.Lens.ActionProvider do
       properties: %{tab: %{}, type: %{type: :string}}
     }
   end
+
+  @spec resolve_tab(term(), term()) :: {:ok, Tab.t()} | {:error, term()}
+  defp resolve_tab(runtime, %TabRef{} = ref), do: SpectreLens.resolve_tab(runtime, ref)
+  defp resolve_tab(_runtime, %Tab{}), do: {:error, :nonportable_lens_tab}
+  defp resolve_tab(_runtime, invalid), do: {:error, {:invalid_lens_tab_ref, invalid}}
 
   @spec known_operation(atom()) :: :ok | {:error, term()}
   defp known_operation(name) do
@@ -235,6 +270,12 @@ defmodule Spectre.Lens.ActionProvider do
   defp normalize_export_type("pdf"), do: :pdf
   defp normalize_export_type(type), do: type
 
+  @spec normalize_action_result(:ok | {:ok, term()} | {:error, term()}) ::
+          {:ok, term()} | {:error, term()}
+  defp normalize_action_result(:ok), do: {:ok, :ok}
+  defp normalize_action_result({:ok, _result} = result), do: result
+  defp normalize_action_result({:error, _reason} = error), do: error
+
   @spec maybe_put(keyword(), atom(), term()) :: keyword()
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
@@ -244,7 +285,6 @@ defmodule Spectre.Lens.ActionProvider do
     outcome =
       case result do
         {:ok, _value} -> :ok
-        :ok -> :ok
         {:error, _reason} -> :error
       end
 
