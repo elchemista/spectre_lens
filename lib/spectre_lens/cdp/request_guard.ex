@@ -64,8 +64,8 @@ defmodule SpectreLens.CDP.RequestGuard do
 
   @impl GenServer
   def handle_info(
-        {:spectre_lens_cdp_event, "Fetch.requestPaused", session_id, params},
-        %{session_id: session_id} = state
+        {:spectre_lens_cdp_event, conn, "Fetch.requestPaused", session_id, params},
+        %{conn: conn, session_id: session_id} = state
       ) do
     handle_paused_request(params, state)
     {:noreply, state}

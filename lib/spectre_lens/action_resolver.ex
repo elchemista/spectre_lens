@@ -50,7 +50,7 @@ defmodule SpectreLens.ActionResolver do
   def navigation_url(_tab, other, _opts), do: {:error, {:missing_navigation_url, other}}
 
   @doc """
-  Resolves a click action into the best target understood by the browser driver.
+  Resolves a click action into the best target understood by the browser protocol.
 
   The resolution order is deliberately explicit:
 

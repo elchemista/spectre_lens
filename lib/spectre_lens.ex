@@ -1,10 +1,11 @@
 defmodule SpectreLens do
   @moduledoc """
-  Agent-first browser lens for Lightpanda.
+  Agent-first, backend-neutral browser perception for Spectre.
 
-  Spectre Lens controls Lightpanda through CDP and returns compact page views
-  designed for agents: markdown, semantic structure, interactive elements,
-  forms, links, structured data and action references.
+  Spectre Lens returns compact page views designed for agents: markdown,
+  semantic structure, interactive elements, forms, links, structured data and
+  action references. Local Lightpanda and remote CDP are runtime adapters, not
+  the library's public semantic contract.
   """
 
   alias SpectreLens.{
@@ -19,6 +20,7 @@ defmodule SpectreLens do
     Runtime,
     Session,
     Tab,
+    TabRef,
     UntrustedContent,
     View,
     Watcher
@@ -29,7 +31,7 @@ defmodule SpectreLens do
   @doc """
   Starts a Spectre Lens runtime.
 
-  The default Lightpanda driver supports one live tab per instance. Use
+  The default Lightpanda backend supports one live tab per instance. Use
   `instances: n` when you need up to `n` concurrent Lightpanda tabs.
   """
   @spec open(keyword()) :: {:ok, Runtime.t()} | {:error, term()}
@@ -45,6 +47,12 @@ defmodule SpectreLens do
   @spec new_tab(Runtime.t() | pid(), keyword()) :: {:ok, Tab.t()} | {:error, term()}
   def new_tab(runtime, opts \\ []) do
     SpectreLens.Errors.safe(:new_tab, fn -> Runtime.new_tab(runtime, opts) end)
+  end
+
+  @doc "Resolves a portable logical tab reference against an explicit runtime."
+  @spec resolve_tab(Runtime.t() | pid(), TabRef.t()) :: {:ok, Tab.t()} | {:error, term()}
+  def resolve_tab(runtime, %TabRef{} = ref) do
+    SpectreLens.Errors.safe(:resolve_tab, fn -> Runtime.resolve_tab(runtime, ref) end)
   end
 
   @doc "Closes a tab and releases its runtime capacity."
@@ -100,9 +108,15 @@ defmodule SpectreLens do
     end)
   end
 
-  @doc "Closes a runtime and all Lightpanda instances it owns."
+  @doc "Closes a runtime and all backend resources it owns."
   @spec close(Runtime.t() | pid()) :: :ok | {:error, term()}
   def close(runtime), do: SpectreLens.Errors.safe(:close, fn -> Runtime.close(runtime) end)
+
+  @doc "Returns a payload-safe snapshot of runtime adapters, capacity, and health metadata."
+  @spec runtime_info(Runtime.t() | pid()) :: map() | {:error, term()}
+  def runtime_info(runtime) do
+    SpectreLens.Errors.safe(:runtime_info, fn -> Runtime.info(runtime) end)
+  end
 
   @doc """
   Looks at the current page and returns an agent-readable `%SpectreLens.View{}`.
@@ -345,18 +359,36 @@ defmodule SpectreLens do
     SpectreLens.Errors.safe(:stop_watch, fn -> Watcher.stop(watcher) end)
   end
 
-  @doc "Sends a raw CDP command to a tab."
-  @spec cdp(Tab.t(), binary(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def cdp(%Tab{} = tab, method, params \\ %{}, opts \\ []) do
-    SpectreLens.Errors.safe(:cdp, fn ->
+  @doc "Sends a protocol-specific low-level command to a tab."
+  @spec command(Tab.t(), binary(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def command(%Tab{} = tab, method, params \\ %{}, opts \\ []) do
+    SpectreLens.Errors.safe(:command, fn ->
       SpectreLens.Protocol.command(tab, method, params, opts)
     end)
   end
 
-  @doc "Returns runtime diagnostics for the Lightpanda binary."
+  @doc "Sends a raw CDP command when the selected protocol is CDP-compatible."
+  @spec cdp(Tab.t(), binary(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def cdp(%Tab{} = tab, method, params \\ %{}, opts \\ []),
+    do: command(tab, method, params, opts)
+
+  @doc "Returns diagnostics for the configured browser backend."
   @spec doctor(keyword()) :: map() | {:error, term()}
   def doctor(opts \\ []) do
-    SpectreLens.Errors.safe(:doctor, fn -> SpectreLens.Lightpanda.doctor(opts) end)
+    SpectreLens.Errors.safe(:doctor, fn ->
+      backend = SpectreLens.Browser.resolve(opts)
+
+      with :ok <- SpectreLens.Browser.validate(backend),
+           {:ok, protocol} <- SpectreLens.Browser.protocol(backend, opts) do
+        backend
+        |> SpectreLens.Browser.doctor(opts)
+        |> Map.merge(%{
+          backend: backend,
+          protocol: protocol,
+          protocol_valid?: true
+        })
+      end
+    end)
   end
 
   @doc """
@@ -472,16 +504,57 @@ defmodule SpectreLens do
   defp runtime_opts(opts) do
     Keyword.take(opts, [
       :allowed_ports,
+      :allow_remote_bind,
+      :backend,
       :binary,
-      :driver,
+      :block_cidrs,
+      :block_urls,
+      :ca_cert,
+      :ca_path,
+      :cdp_max_connections,
+      :cdp_max_http_message_size,
+      :cdp_max_message_size,
+      :cdp_max_pending_connections,
+      :check_version,
+      :disable_metrics,
+      :disable_subframes,
+      :disable_workers,
+      :enable_external_stylesheets,
+      :endpoint,
+      :endpoints,
       :host,
+      :http_cache_dir,
+      :http_connect_timeout,
+      :http_max_concurrent,
+      :http_max_host_open,
+      :http_max_response_size,
+      :http_proxy,
+      :http_timeout,
       :instances,
+      :max_tabs_per_instance,
       :network_policy,
+      :log_filter_scopes,
+      :log_format,
+      :log_level,
+      :obey_robots,
       :port,
       :ports,
+      :protocol,
+      :proxy_bearer_token,
       :resolver,
       :serve_args,
-      :timeout
+      :startup_timeout,
+      :storage_engine,
+      :storage_sqlite_path,
+      :user_agent,
+      :user_agent_suffix,
+      :v8_flags_unsafe,
+      :v8_max_heap_mb,
+      :web_bot_auth_domain,
+      :web_bot_auth_key_file,
+      :web_bot_auth_keyid,
+      :ws_max_concurrent,
+      :watchdog_ms
     ])
   end
 

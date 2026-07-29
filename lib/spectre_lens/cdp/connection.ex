@@ -415,7 +415,7 @@ defmodule SpectreLens.CDP.Connection do
     |> Enum.flat_map(&(state.subscribers |> Map.get(&1, %{}) |> Map.keys()))
     |> Enum.uniq()
     |> Enum.each(fn subscriber ->
-      send(subscriber, {:spectre_lens_cdp_event, method, session_id, params})
+      send(subscriber, {:spectre_lens_cdp_event, self(), method, session_id, params})
     end)
 
     state

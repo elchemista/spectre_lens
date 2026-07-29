@@ -6,6 +6,11 @@ defmodule SpectreLens.URLPolicy do
   addresses are public. Callers that intentionally browse a local development
   server must opt in with `network_policy: :any`.
 
+  The module also implements the Lens Stack policy callback `authorize/3`.
+  Operations that introduce a top-level URL are checked before Lens resolves
+  the caller-owned browser runtime. Operations on an existing tab remain
+  guarded by the URL policy persisted on that tab and by the request guard.
+
   This policy deliberately does not claim to prevent DNS rebinding. Production
   deployments should still isolate the browser's network egress.
   """
@@ -60,6 +65,45 @@ defmodule SpectreLens.URLPolicy do
   def merge_options(base, opts) when is_list(base) and is_list(opts) do
     Keyword.merge(base, take_options(opts))
   end
+
+  @doc "Validates URL-policy configuration before browser resources are allocated."
+  @spec validate_options(keyword()) :: :ok | {:error, term()}
+  def validate_options(opts) when is_list(opts) do
+    with {:ok, _policy} <- policy(opts),
+         :ok <- validate_allowed_ports_option(Keyword.get(opts, :allowed_ports)) do
+      validate_resolver_option(Keyword.get(opts, :resolver))
+    end
+  end
+
+  def validate_options(opts), do: {:error, {:invalid_url_policy_options, opts}}
+
+  @doc """
+  Authorizes a Lens Stack operation.
+
+  `:open` and `:discover` always introduce a URL. `:look` introduces one only
+  when it is not operating on an existing tab. Actions and exports use an
+  existing tab whose persisted URL policy is enforced by the protocol and
+  request guard.
+  """
+  @spec authorize(atom(), map(), keyword()) :: :ok | {:error, term()}
+  def authorize(operation, args, opts) when is_map(args) and is_list(opts) do
+    case operation do
+      operation when operation in [:open, :discover] ->
+        authorize_url(args, opts)
+
+      :look ->
+        if arg(args, :tab), do: :ok, else: authorize_url(args, opts)
+
+      operation when operation in [:act, :export] ->
+        :ok
+
+      other ->
+        {:error, {:unsupported_lens_operation, other}}
+    end
+  end
+
+  def authorize(operation, args, _opts),
+    do: {:error, {:invalid_lens_policy_request, operation, args}}
 
   @doc "Validates a top-level browser or HTTP destination."
   @spec validate(binary(), keyword()) :: {:ok, binary()} | {:error, term()}
@@ -132,6 +176,28 @@ defmodule SpectreLens.URLPolicy do
 
   def public_address?(_address), do: false
 
+  @spec authorize_url(map(), keyword()) :: :ok | {:error, term()}
+  defp authorize_url(args, opts) do
+    case arg(args, :url) do
+      nil ->
+        {:error, {:missing_lens_argument, :url}}
+
+      url ->
+        case validate(url, opts) do
+          {:ok, _url} -> :ok
+          {:error, _reason} = error -> error
+        end
+    end
+  end
+
+  @spec arg(map(), atom()) :: term()
+  defp arg(args, key) do
+    case Map.fetch(args, key) do
+      {:ok, value} -> value
+      :error -> Map.get(args, Atom.to_string(key))
+    end
+  end
+
   @spec policy(keyword()) :: {:ok, policy()} | {:error, term()}
   defp policy(opts) do
     case Keyword.get(opts, :network_policy, :public) do
@@ -178,6 +244,25 @@ defmodule SpectreLens.URLPolicy do
   end
 
   defp validate_allowed_port(port, _allowed), do: {:error, {:port_not_allowed, port}}
+
+  @spec validate_allowed_ports_option(term()) :: :ok | {:error, term()}
+  defp validate_allowed_ports_option(nil), do: :ok
+  defp validate_allowed_ports_option(:any), do: :ok
+
+  defp validate_allowed_ports_option(ports) when is_list(ports) do
+    if Enum.all?(ports, &(is_integer(&1) and &1 in 1..65_535)) do
+      :ok
+    else
+      {:error, {:invalid_allowed_ports, ports}}
+    end
+  end
+
+  defp validate_allowed_ports_option(ports), do: {:error, {:invalid_allowed_ports, ports}}
+
+  @spec validate_resolver_option(term()) :: :ok | {:error, term()}
+  defp validate_resolver_option(nil), do: :ok
+  defp validate_resolver_option(resolver) when is_function(resolver, 2), do: :ok
+  defp validate_resolver_option(resolver), do: {:error, {:invalid_url_resolver, resolver}}
 
   @spec validate_host(binary(), policy(), keyword()) :: :ok | {:error, term()}
   defp validate_host(_host, :any, _opts), do: :ok

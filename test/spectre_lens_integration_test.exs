@@ -1,11 +1,13 @@
 defmodule SpectreLensIntegrationTest do
   use ExUnit.Case, async: false
 
+  alias SpectreLens.CDP.Connection
+
   @moduletag :integration
   @real_content_pages [
     {"https://google.com", "google.com"},
     {"https://www.paginebianche.it/aziende?qs=IT&dv=Italia", "paginebianche.it"},
-    {"https://filmix.my/", "filmix.my"},
+    {"https://filmix.my/", ["filmix.my", "filmix.gg"]},
     {"https://www.paginegialle.it/supermercati-aperti", "paginegialle.it"}
   ]
   @real_content_timeout 90_000
@@ -15,13 +17,156 @@ defmodule SpectreLensIntegrationTest do
     assert {:ok, lens} = SpectreLens.open(instances: 1)
 
     try do
+      assert %{
+               backend: SpectreLens.Browsers.Lightpanda,
+               protocol: SpectreLens.Protocol.Lightpanda,
+               instances: [
+                 %{
+                   metadata: %{
+                     version: "1.0.0-nightly.8362" <> _build
+                   }
+                 }
+               ]
+             } = SpectreLens.runtime_info(lens)
+
       assert {:ok, tab} = SpectreLens.new_tab(lens, url: "https://example.com")
-      assert {:ok, view} = SpectreLens.look(tab, include: [:markdown, :semantic_tree, :links])
+
+      assert {:ok, view} =
+               SpectreLens.look(tab,
+                 include: [
+                   :markdown,
+                   :semantic_tree,
+                   :semantic_text,
+                   :interactive,
+                   :structured_data,
+                   :links
+                 ]
+               )
+
       assert view.url =~ "example.com"
       assert is_binary(view.markdown)
       assert is_map(view.semantic_tree)
+      assert is_binary(view.semantic_text)
+      assert is_list(view.interactive)
+      assert is_map(view.structured_data)
     after
       SpectreLens.close(lens)
+    end
+  end
+
+  test "generic CDP projections work without any Lightpanda protocol extensions" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+
+    {:ok, server} =
+      start_http_server("""
+      <html>
+        <head>
+          <title>Generic protocol</title>
+          <meta name="description" content="standard DOM only">
+          <script type="application/ld+json">{"@type":"WebPage","name":"Generic"}</script>
+        </head>
+        <body>
+          <main>
+            <h1>Generic CDP</h1>
+            <p>No LP domain is required.</p>
+            <a href="/next">Next</a>
+            <button type="button">Run</button>
+          </main>
+        </body>
+      </html>
+      """)
+
+    assert {:ok, lens} =
+             SpectreLens.open(
+               protocol: SpectreLens.Protocol.CDP,
+               network_policy: :any
+             )
+
+    try do
+      assert {:ok, tab} =
+               SpectreLens.new_tab(lens, url: "http://127.0.0.1:#{server.port}/")
+
+      assert tab.protocol == SpectreLens.Protocol.CDP
+
+      assert {:ok, view} =
+               SpectreLens.look(tab,
+                 include: [
+                   :markdown,
+                   :semantic_tree,
+                   :semantic_text,
+                   :interactive,
+                   :structured_data
+                 ]
+               )
+
+      assert view.markdown =~ "# Generic CDP"
+      assert %{"nodes" => nodes} = view.semantic_tree
+      refute Enum.empty?(nodes)
+      assert view.semantic_text =~ "heading"
+      assert Enum.any?(view.interactive, &(&1["name"] == "Run"))
+      assert [%{"@type" => "WebPage"}] = view.structured_data["jsonLd"]
+    after
+      SpectreLens.close(lens)
+      stop_http_server(server)
+    end
+  end
+
+  test "RemoteCDP connects to an external browser without taking process ownership" do
+    assert {:ok, binary} = SpectreLens.Lightpanda.detect()
+    assert {:ok, external} = SpectreLens.Lightpanda.start_instance(binary: binary)
+
+    try do
+      assert {:ok, runtime} =
+               SpectreLens.open(
+                 backend: SpectreLens.Browsers.RemoteCDP,
+                 protocol: SpectreLens.Protocol.CDP,
+                 endpoint: external.endpoint,
+                 max_tabs_per_instance: 1
+               )
+
+      try do
+        assert {:ok, tab} = SpectreLens.new_tab(runtime, url: "https://example.com")
+        assert {:ok, markdown} = SpectreLens.export(tab, :markdown)
+        assert markdown =~ "Example Domain"
+        assert :ok = SpectreLens.close(runtime)
+
+        assert {:ok, %{status: 200, body: %{"webSocketDebuggerUrl" => websocket}}} =
+                 Req.get(external.endpoint <> "/json/version", retry: false)
+
+        assert is_binary(websocket)
+      after
+        SpectreLens.close(runtime)
+      end
+    after
+      SpectreLens.Lightpanda.stop_instance(external)
+    end
+  end
+
+  @tag capture_log: true
+  test "a real Lightpanda process exit is propagated through the backend lifecycle" do
+    assert {:ok, _path} = SpectreLens.Lightpanda.detect()
+    previous = Process.flag(:trap_exit, true)
+
+    try do
+      assert {:ok, lens} = SpectreLens.open()
+
+      try do
+        [%{owner: lightpanda}] = :sys.get_state(lens.pid).instances
+        monitor = Process.monitor(lens.pid)
+
+        assert :ok = SpectreLens.Lightpanda.stop_instance(lightpanda)
+
+        assert_receive {:DOWN, ^monitor, :process, _pid,
+                        {:browser_instance_down, 1, lifecycle_reason}},
+                       10_000
+
+        assert match?({:lightpanda_down, _reason}, lifecycle_reason) or
+                 match?({:connection_down, _reason}, lifecycle_reason)
+      after
+        SpectreLens.close(lens)
+      end
+    after
+      Process.flag(:trap_exit, previous)
     end
   end
 
@@ -467,7 +612,7 @@ defmodule SpectreLensIntegrationTest do
       guard_monitor = Process.monitor(first.request_guard)
 
       assert {:ok, _result} =
-               SpectreLens.CDP.Connection.send_command(
+               Connection.send_command(
                  first.conn,
                  "Target.closeTarget",
                  %{targetId: first.target_id},
@@ -536,8 +681,8 @@ defmodule SpectreLensIntegrationTest do
     "#{uri.scheme}://#{uri.host}:#{uri.port}"
   end
 
-  defp assert_real_page_content(view, expected_host) do
-    assert view.url =~ expected_host
+  defp assert_real_page_content(view, expected_hosts) do
+    assert Enum.any?(List.wrap(expected_hosts), &String.contains?(view.url, &1))
     assert is_binary(view.title)
     assert byte_size(view.title) > 0
     assert byte_size(view.markdown) > 500

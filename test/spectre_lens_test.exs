@@ -289,6 +289,35 @@ defmodule SpectreLensTest do
   end
 
   describe "network URL policy" do
+    test "implements the fail-closed Lens Stack authorization contract" do
+      assert :ok =
+               URLPolicy.authorize(
+                 :open,
+                 %{"url" => "https://example.com"},
+                 network_policy: :any
+               )
+
+      assert :ok =
+               URLPolicy.authorize(
+                 :look,
+                 %{tab: %SpectreLens.TabRef{id: "tab-1", instance_id: 1}},
+                 network_policy: :any
+               )
+
+      assert {:error, {:unsupported_url_scheme, "file"}} =
+               URLPolicy.authorize(
+                 :discover,
+                 %{url: "file:///etc/passwd"},
+                 network_policy: :any
+               )
+
+      assert {:error, {:missing_lens_argument, :url}} =
+               URLPolicy.authorize(:open, %{}, network_policy: :any)
+
+      assert {:error, {:unsupported_lens_operation, :unknown}} =
+               URLPolicy.authorize(:unknown, %{}, network_policy: :any)
+    end
+
     test "blocks non-HTTP schemes, credentials, private addresses, and non-standard ports" do
       assert {:error, {:unsupported_url_scheme, "file"}} =
                URLPolicy.validate("file:///etc/passwd")
@@ -355,12 +384,26 @@ defmodule SpectreLensTest do
                URLPolicy.validate("http://127.0.0.1:4000/", network_policy: :any)
     end
 
-    test "normal navigation validates before invoking the browser driver" do
+    test "validates policy configuration independently from a URL" do
+      assert :ok = URLPolicy.validate_options(network_policy: :public)
+      assert :ok = URLPolicy.validate_options(network_policy: :any, allowed_ports: :any)
+
+      assert {:error, {:invalid_network_policy, :internal}} =
+               URLPolicy.validate_options(network_policy: :internal)
+
+      assert {:error, {:invalid_allowed_ports, [443, 70_000]}} =
+               URLPolicy.validate_options(allowed_ports: [443, 70_000])
+
+      assert {:error, {:invalid_url_resolver, :dns}} =
+               URLPolicy.validate_options(resolver: :dns)
+    end
+
+    test "normal navigation validates before invoking the browser protocol" do
       Process.put(:action_parent, self())
 
       on_exit(fn -> Process.delete(:action_parent) end)
 
-      tab = %Tab{driver: ViewShapeProtocol}
+      tab = %Tab{protocol: ViewShapeProtocol}
 
       assert {:error, {:address_not_allowed, "127.0.0.1", {127, 0, 0, 1}}} =
                SpectreLens.Protocol.navigate(tab, "http://127.0.0.1/private")
@@ -599,7 +642,7 @@ defmodule SpectreLensTest do
 
   describe "browser protocol" do
     test "look dispatches through the tab driver instead of hard-coding CDP" do
-      tab = %Tab{driver: FakeProtocol}
+      tab = %Tab{protocol: FakeProtocol}
 
       assert {:ok, view} =
                SpectreLens.look(tab,
@@ -615,7 +658,7 @@ defmodule SpectreLensTest do
     end
 
     test "look reports completely empty requested page projections" do
-      tab = %Tab{driver: ViewShapeProtocol}
+      tab = %Tab{protocol: ViewShapeProtocol}
 
       assert {:ok, view} =
                SpectreLens.look(tab,
@@ -635,8 +678,8 @@ defmodule SpectreLensTest do
               }} in view.errors
     end
 
-    test "public act/export/cdp dispatch through protocol driver" do
-      tab = %Tab{driver: FakeProtocol}
+    test "public act/export/command dispatch through the protocol" do
+      tab = %Tab{protocol: FakeProtocol}
       export_path = Path.join(System.tmp_dir!(), "spectre-lens-export-test.png")
       File.rm(export_path)
 
@@ -656,7 +699,7 @@ defmodule SpectreLensTest do
                SpectreLens.cdp(tab, "Browser.getVersion")
     end
 
-    test "public API catches driver exceptions" do
+    test "public API catches protocol exceptions" do
       defmodule ExplodingProtocol do
         @behaviour SpectreLens.Protocol
 
@@ -686,7 +729,7 @@ defmodule SpectreLensTest do
         def scroll(_tab, _opts), do: :ok
       end
 
-      tab = %Tab{driver: ExplodingProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: ExplodingProtocol, url_policy: [network_policy: :any]}
 
       assert {:error, %SpectreLens.CaughtError{operation: :act}} =
                SpectreLens.act(tab, {:navigate, "https://boom.local"})
@@ -697,12 +740,12 @@ defmodule SpectreLensTest do
       assert {:error, %SpectreLens.CaughtError{operation: :zoom_out}} =
                SpectreLens.zoom_out(tab)
 
-      assert {:error, %SpectreLens.CaughtError{operation: :cdp}} =
+      assert {:error, %SpectreLens.CaughtError{operation: :command}} =
                SpectreLens.cdp(tab, "Browser.getVersion")
     end
 
-    test "zoom_out, unfocus, and zoom_in dispatch through protocol driver" do
-      tab = %Tab{driver: FakeProtocol}
+    test "zoom_out, unfocus, and zoom_in dispatch through the protocol" do
+      tab = %Tab{protocol: FakeProtocol}
 
       assert {:ok, map} = SpectreLens.zoom_out(tab)
       assert map.description =~ "navigation bar"
@@ -717,7 +760,7 @@ defmodule SpectreLensTest do
     end
 
     test "outline returns compact and detailed section outlines" do
-      tab = %Tab{driver: FakeProtocol}
+      tab = %Tab{protocol: FakeProtocol}
 
       assert {:ok, %Outline{} = outline} = SpectreLens.outline(tab)
       assert outline.text =~ "[Navigation]"
@@ -751,7 +794,7 @@ defmodule SpectreLensTest do
     end
 
     test "zoom_in accepts an outline section" do
-      tab = %Tab{driver: FakeProtocol}
+      tab = %Tab{protocol: FakeProtocol}
 
       assert {:ok, outline} = SpectreLens.outline(tab)
       section = Enum.find(outline.sections, &(&1.purpose == :hero))
@@ -792,7 +835,7 @@ defmodule SpectreLensTest do
       context = %Context{
         include: [:interactive],
         view: %View{},
-        tab: %Tab{driver: ViewShapeProtocol}
+        tab: %Tab{protocol: ViewShapeProtocol}
       }
 
       assert %{view: %View{interactive: interactive}} = Plugs.Interactive.call(context, [])
@@ -811,7 +854,7 @@ defmodule SpectreLensTest do
       context = %Context{
         include: [:links],
         view: %View{},
-        tab: %Tab{driver: ViewShapeProtocol}
+        tab: %Tab{protocol: ViewShapeProtocol}
       }
 
       assert %{view: %View{links: links}} = Plugs.Links.call(context, [])
@@ -875,7 +918,7 @@ defmodule SpectreLensTest do
         %{"href" => "https://example.com/contact", "text" => "Contact"}
       ])
 
-      tab = %Tab{driver: ViewShapeProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: ViewShapeProtocol, url_policy: [network_policy: :any]}
 
       assert :ok = SpectreLens.act(tab, {:navigate, text: "latest article"})
       assert_receive {:navigate, "https://example.com/latest"}
@@ -887,7 +930,7 @@ defmodule SpectreLensTest do
         %{"href" => "https://example.com/contact", "text" => "Contact"}
       ])
 
-      tab = %Tab{driver: ViewShapeProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: ViewShapeProtocol, url_policy: [network_policy: :any]}
 
       assert :ok = SpectreLens.act(tab, {:navigate, text: "latst articls"})
       assert_receive {:navigate, "https://example.com/latest"}
@@ -899,7 +942,7 @@ defmodule SpectreLensTest do
         %{"tagName" => "button", "role" => "button", "name" => "Subscribe"}
       ])
 
-      tab = %Tab{driver: ViewShapeProtocol}
+      tab = %Tab{protocol: ViewShapeProtocol}
 
       assert :ok = SpectreLens.act(tab, {:click, name: "open"})
       assert_receive {:click, %{"name" => "Open menu"}}
@@ -909,7 +952,7 @@ defmodule SpectreLensTest do
       Process.put(:interactive_elements, [])
       Process.put(:links, [%{"href" => "https://example.com/pricing", "text" => "Pricing"}])
 
-      tab = %Tab{driver: ViewShapeProtocol}
+      tab = %Tab{protocol: ViewShapeProtocol}
 
       assert :ok = SpectreLens.act(tab, {:click, text: "price"})
       assert_receive {:click, %{"href" => "https://example.com/pricing"}}
@@ -928,7 +971,7 @@ defmodule SpectreLensTest do
         %{"href" => "https://example.com/latest", "text" => "Latest articles"}
       ])
 
-      tab = %Tab{driver: ViewShapeProtocol}
+      tab = %Tab{protocol: ViewShapeProtocol}
 
       assert :ok = SpectreLens.act(tab, {:click, text: "latest"})
       assert_receive {:click, %{"href" => "https://example.com/latest"}}
@@ -938,7 +981,7 @@ defmodule SpectreLensTest do
       Process.put(:interactive_elements, [%{"tagName" => "button", "name" => "Subscribe"}])
       Process.put(:links, [%{"href" => "https://example.com/blog", "text" => "Blog"}])
 
-      tab = %Tab{driver: ViewShapeProtocol}
+      tab = %Tab{protocol: ViewShapeProtocol}
 
       assert {:error, %SpectreLens.ElementNotFoundError{}} =
                SpectreLens.act(tab, {:click, text: "settings"})
@@ -1010,7 +1053,7 @@ defmodule SpectreLensTest do
     end
 
     test "returns compact context and ranked same-origin candidates", %{root: root} do
-      tab = %Tab{driver: DiscoveryProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: DiscoveryProtocol, url_policy: [network_policy: :any]}
 
       assert {:ok, %Discovery{} = discovery} =
                SpectreLens.discover(tab,
@@ -1048,7 +1091,7 @@ defmodule SpectreLensTest do
 
       Process.put(:discovery_pages, pages)
 
-      tab = %Tab{driver: DiscoveryProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: DiscoveryProtocol, url_policy: [network_policy: :any]}
 
       assert {:ok, discovery} =
                SpectreLens.discover(tab,
@@ -1077,7 +1120,7 @@ defmodule SpectreLensTest do
 
       Process.put(:discovery_pages, pages)
 
-      tab = %Tab{driver: DiscoveryProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: DiscoveryProtocol, url_policy: [network_policy: :any]}
 
       assert {:ok, discovery} =
                SpectreLens.discover(tab,
@@ -1247,7 +1290,7 @@ defmodule SpectreLensTest do
         url, _opts -> {:error, {:unexpected_url, url}}
       end
 
-      tab = %Tab{driver: LlmsProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: LlmsProtocol, url_policy: [network_policy: :any]}
 
       assert {:ok, view} =
                SpectreLens.look(tab,
@@ -1271,7 +1314,7 @@ defmodule SpectreLensTest do
         {:ok, "# Agent"}
       end
 
-      tab = %Tab{driver: LlmsProtocol, url_policy: [network_policy: :any]}
+      tab = %Tab{protocol: LlmsProtocol, url_policy: [network_policy: :any]}
 
       assert {:ok, view} = SpectreLens.look(tab, include: [:markdown], fetcher: fetcher)
       assert view.llms == nil
@@ -1371,7 +1414,7 @@ defmodule SpectreLensTest do
 
   describe "watcher lifecycle" do
     test "stop sends the watcher protocol message and waits for termination" do
-      tab = %Tab{driver: FakeProtocol}
+      tab = %Tab{protocol: FakeProtocol}
 
       assert {:ok, watcher} =
                SpectreLens.watch(tab, include: [:markdown, :interactive], every: 60_000)

@@ -44,6 +44,14 @@ defmodule SpectreLens.Page do
     end
   end
 
+  @doc false
+  @spec target_closed(Tab.t()) :: :ok
+  def target_closed(%Tab{} = tab) do
+    RequestGuard.target_closed(tab.request_guard)
+    dispose_browser_context(tab.conn, tab.browser_context_id)
+    :ok
+  end
+
   @spec finish_new_tab(Tab.t(), binary(), keyword()) :: {:ok, Tab.t()} | {:error, term()}
   defp finish_new_tab(tab, target_url, opts) do
     case RequestGuard.start(tab, opts) do
@@ -151,53 +159,38 @@ defmodule SpectreLens.Page do
     end)
   end
 
-  @doc "Returns Lightpanda-native markdown for the current DOM."
+  @doc "Returns browser-neutral markdown generated from the current DOM."
   @spec markdown(Tab.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def markdown(%Tab{} = tab, opts \\ []) do
     page_operation(tab, :markdown, %{}, fn ->
-      params =
-        %{}
-        |> maybe_put("nodeId", opts[:node_id])
-        |> maybe_put("backendNodeId", opts[:backend_node_id])
-
-      with {:ok, result} <- command(tab, "LP.getMarkdown", params, opts) do
-        {:ok, result["markdown"] || result["text"] || ""}
-      end
+      evaluate(tab, generic_markdown_script(), opts)
     end)
   end
 
-  @doc "Returns Lightpanda semantic tree output."
+  @doc "Returns the standard CDP accessibility tree."
   @spec semantic_tree(Tab.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def semantic_tree(%Tab{} = tab, opts \\ []) do
     page_operation(tab, :semantic_tree, %{}, fn ->
-      format = opts[:format] || :json
-
-      params =
-        %{}
-        |> maybe_put("format", semantic_tree_format(format))
-        |> maybe_put("prune", opts[:prune])
-
-      with {:ok, result} <- command(tab, "LP.getSemanticTree", params, opts) do
-        {:ok, result["semanticTree"] || result["tree"] || result["nodes"] || result}
+      with {:ok, %{"nodes" => nodes}} <-
+             command(tab, "Accessibility.getFullAXTree", %{}, opts) do
+        semantic_projection(nodes, opts[:format])
       end
     end)
   end
 
-  @doc "Returns every interactive element reported by Lightpanda."
+  @doc "Returns interactive elements through standard DOM APIs."
   @spec interactive_elements(Tab.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def interactive_elements(%Tab{} = tab, opts \\ []) do
     page_operation(tab, :interactive_elements, %{}, fn ->
-      with {:ok, result} <- command(tab, "LP.getInteractiveElements", %{}, opts) do
-        {:ok, result["elements"] || []}
-      end
+      evaluate(tab, interactive_elements_script(), opts)
     end)
   end
 
-  @doc "Returns structured metadata extracted by Lightpanda."
+  @doc "Returns structured metadata extracted with standard DOM APIs."
   @spec structured_data(Tab.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def structured_data(%Tab{} = tab, opts \\ []) do
     page_operation(tab, :structured_data, %{}, fn ->
-      command(tab, "LP.getStructuredData", %{}, opts)
+      evaluate(tab, structured_data_script(), opts)
     end)
   end
 
@@ -584,18 +577,29 @@ defmodule SpectreLens.Page do
 
   @spec build_tab(pid(), binary(), binary(), binary() | nil, keyword()) :: Tab.t()
   defp build_tab(conn, target_id, session_id, browser_context_id, opts) do
+    instance_id = opts[:instance_id]
+
     %Tab{
+      id: logical_tab_id(instance_id, target_id, session_id),
       conn: conn,
-      driver: opts[:driver] || SpectreLens.Protocol.LightpandaCDP,
+      protocol: opts[:protocol] || SpectreLens.Protocol.CDP,
       session_id: session_id,
       target_id: target_id,
       browser_context_id: browser_context_id,
       session_key: opts[:session_key],
       runtime: opts[:runtime],
-      instance_id: opts[:instance_id],
+      instance_id: instance_id,
       endpoint: opts[:endpoint],
       url_policy: SpectreLens.URLPolicy.take_options(opts)
     }
+  end
+
+  @spec logical_tab_id(term(), binary(), binary()) :: binary()
+  defp logical_tab_id(instance_id, target_id, session_id) do
+    {instance_id, target_id, session_id}
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.url_encode64(padding: false)
   end
 
   @spec close_target(Tab.t()) :: :ok | {:error, term()}
@@ -1132,11 +1136,164 @@ defmodule SpectreLens.Page do
   defp parse_evaluate_result(%{"result" => %{"value" => value}}), do: {:ok, value}
   defp parse_evaluate_result(%{"result" => result}), do: {:ok, result["value"]}
 
-  @spec semantic_tree_format(atom() | binary()) :: binary() | nil
-  defp semantic_tree_format(:json), do: nil
-  defp semantic_tree_format("json"), do: nil
-  defp semantic_tree_format(:text), do: "text"
-  defp semantic_tree_format(other), do: to_string(other)
+  @spec accessibility_text([map()]) :: binary()
+  defp accessibility_text(nodes) do
+    Enum.map_join(nodes, "\n", fn node ->
+      id = node["nodeId"] || "?"
+      role = ax_value(node["role"]) || "unknown"
+      name = ax_value(node["name"])
+      suffix = if is_binary(name) and name != "", do: ": " <> name, else: ""
+      "[#{id}] #{role}#{suffix}"
+    end)
+  end
+
+  @spec semantic_projection([map()], term()) :: {:ok, binary() | map()}
+  defp semantic_projection(nodes, format) when format in [:text, "text"],
+    do: {:ok, accessibility_text(nodes)}
+
+  defp semantic_projection(nodes, _format), do: {:ok, %{"nodes" => nodes}}
+
+  @spec ax_value(term()) :: term()
+  defp ax_value(%{"value" => value}), do: value
+  defp ax_value(value), do: value
+
+  @spec generic_markdown_script() :: binary()
+  defp generic_markdown_script do
+    ~S"""
+    (() => {
+      const clean = value => (value || '').replace(/\s+/g, ' ').trim();
+      const escapeText = value => clean(value).replace(/([\\`*_[\]<>])/g, '\\$1');
+      const renderChildren = node => Array.from(node.childNodes).map(render).join('');
+      const block = value => {
+        const text = (value || '').trim();
+        return text ? `\n\n${text}\n\n` : '';
+      };
+      const render = node => {
+        if (node.nodeType === Node.TEXT_NODE) return escapeText(node.nodeValue);
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        const tag = node.tagName.toLowerCase();
+        if (['script', 'style', 'noscript', 'template', 'svg'].includes(tag)) return '';
+        const children = renderChildren(node);
+        if (/^h[1-6]$/.test(tag)) return block(`${'#'.repeat(Number(tag[1]))} ${clean(node.innerText)}`);
+        if (tag === 'p' || tag === 'section' || tag === 'article' || tag === 'main' ||
+            tag === 'header' || tag === 'footer' || tag === 'nav' || tag === 'aside') {
+          return block(children);
+        }
+        if (tag === 'br') return '\n';
+        if (tag === 'hr') return '\n\n---\n\n';
+        if (tag === 'strong' || tag === 'b') return `**${children.trim()}**`;
+        if (tag === 'em' || tag === 'i') return `_${children.trim()}_`;
+        if (tag === 'code' && node.parentElement?.tagName.toLowerCase() !== 'pre') {
+          return `\`${node.textContent || ''}\``;
+        }
+        if (tag === 'pre') return block(`\`\`\`\n${node.textContent || ''}\n\`\`\``);
+        if (tag === 'a') {
+          const label = clean(node.innerText || node.textContent) || node.href;
+          return node.href ? `[${escapeText(label)}](${node.href})` : escapeText(label);
+        }
+        if (tag === 'img') {
+          const alt = escapeText(node.getAttribute('alt') || '');
+          return node.src ? `![${alt}](${node.src})` : '';
+        }
+        if (tag === 'li') return `\n- ${children.trim()}`;
+        if (tag === 'ul' || tag === 'ol') return block(children);
+        if (tag === 'blockquote') return block(clean(node.innerText).split('\n').map(line => `> ${line}`).join('\n'));
+        if (tag === 'tr') return `| ${Array.from(node.cells).map(cell => clean(cell.innerText)).join(' | ')} |\n`;
+        if (tag === 'table') return block(Array.from(node.rows).map(render).join(''));
+        return children;
+      };
+      return render(document.body || document.documentElement)
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    })()
+    """
+  end
+
+  @spec interactive_elements_script() :: binary()
+  defp interactive_elements_script do
+    ~S"""
+    (() => {
+      const selector = [
+        'a[href]', 'button', 'input:not([type="hidden"])', 'textarea', 'select',
+        'summary', '[role="button"]', '[role="link"]', '[role="checkbox"]',
+        '[role="radio"]', '[role="tab"]', '[contenteditable="true"]', '[tabindex]'
+      ].join(',');
+      const cssPath = el => {
+        if (el.id) return `#${CSS.escape(el.id)}`;
+        const parts = [];
+        for (let current = el; current && current.nodeType === Node.ELEMENT_NODE; current = current.parentElement) {
+          let part = current.tagName.toLowerCase();
+          const siblings = current.parentElement
+            ? Array.from(current.parentElement.children).filter(child => child.tagName === current.tagName)
+            : [];
+          if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+          parts.unshift(part);
+          if (current === document.body) break;
+        }
+        return parts.join(' > ');
+      };
+      return Array.from(document.querySelectorAll(selector))
+        .filter(el => {
+          const style = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          return !el.disabled && style.display !== 'none' && style.visibility !== 'hidden' &&
+            Number(style.opacity || 1) > 0 && rect.width > 0 && rect.height > 0;
+        })
+        .map((el, index) => ({
+          index,
+          tagName: el.tagName.toLowerCase(),
+          role: el.getAttribute('role') || null,
+          type: el.getAttribute('type') || null,
+          name: (
+            el.getAttribute('aria-label') ||
+            (el.labels && el.labels[0] && el.labels[0].innerText) ||
+            el.innerText || el.textContent || el.getAttribute('name') || el.id || ''
+          ).trim(),
+          href: el.href || null,
+          selector: cssPath(el),
+          disabled: !!el.disabled
+        }));
+    })()
+    """
+  end
+
+  @spec structured_data_script() :: binary()
+  defp structured_data_script do
+    ~S"""
+    (() => {
+      const entries = selector => Object.fromEntries(
+        Array.from(document.querySelectorAll(selector))
+          .map(node => [
+            node.getAttribute('property') || node.getAttribute('name'),
+            node.getAttribute('content')
+          ])
+          .filter(([key, value]) => key && value)
+      );
+      const jsonLd = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+        .flatMap(node => {
+          try {
+            const value = JSON.parse(node.textContent || 'null');
+            return Array.isArray(value) ? value : [value];
+          } catch (_) {
+            return [];
+          }
+        })
+        .filter(value => value !== null);
+      return {
+        meta: {
+          title: document.title || null,
+          description: document.querySelector('meta[name="description"]')?.content || null,
+          language: document.documentElement.lang || null,
+          canonical: document.querySelector('link[rel="canonical"]')?.href || null
+        },
+        openGraph: entries('meta[property^="og:"]'),
+        twitterCard: entries('meta[name^="twitter:"]'),
+        jsonLd
+      };
+    })()
+    """
+  end
 
   @spec selector_for(term()) :: binary() | nil
   defp selector_for(%SpectreLens.ActionRef{selector: selector}) when is_binary(selector),

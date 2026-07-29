@@ -177,7 +177,7 @@ defmodule SpectreLens.Errors do
   end
 
   defp unsupported_hint(%SpectreLens.UnsupportedError{feature: feature}) do
-    "The active browser driver does not support #{feature}. Use a different driver or fallback export."
+    "The active browser protocol does not support #{feature}. Use a different adapter or fallback export."
   end
 
   @spec generic_hint(atom()) :: binary() | nil

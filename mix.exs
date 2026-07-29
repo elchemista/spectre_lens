@@ -1,7 +1,7 @@
 defmodule SpectreLens.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.1.3"
   @source_url "https://github.com/elchemista/spectre_lens"
 
   def project do
@@ -36,11 +36,11 @@ defmodule SpectreLens.MixProject do
   defp deps do
     [
       spectre_dep(),
-      {:jason, "~> 1.4"},
-      {:req, "~> 0.5"},
-      {:websockex, "~> 0.4"},
-      {:erlexec, "~> 2.0"},
-      {:telemetry, "~> 1.0"},
+      {:jason, "~> 1.4.5"},
+      {:req, "~> 0.7.1"},
+      {:websockex, "~> 0.5.1"},
+      {:erlexec, "~> 2.3.4"},
+      {:telemetry, "~> 1.4"},
       {:ex_doc, "~> 0.34", only: [:dev, :test], optional: true, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
@@ -50,7 +50,7 @@ defmodule SpectreLens.MixProject do
   defp spectre_dep do
     case System.get_env("SPECTRE_PATH") do
       path when is_binary(path) and path != "" -> {:spectre, path: Path.expand(path)}
-      _other -> {:spectre, github: "elchemista/spectre", branch: "feature/v0.1.2-stack"}
+      _other -> {:spectre, github: "elchemista/spectre", branch: "feature/v0.1.3-run"}
     end
   end
 
@@ -61,7 +61,7 @@ defmodule SpectreLens.MixProject do
   end
 
   defp description do
-    "Agent-first Lightpanda CDP lens for Elixir."
+    "Agent-first, backend-neutral browser perception for Elixir."
   end
 
   defp package do

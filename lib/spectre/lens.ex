@@ -18,9 +18,9 @@ defmodule Spectre.Lens do
 
   use Spectre.Stack.Installable,
     id: :lens,
-    version: "0.1.2",
+    version: "0.1.3",
     contract: 1,
-    spectre: "~> 0.1.2",
+    spectre: "~> 0.1.3",
     provides: [{:service, :lens}],
     actions: [
       {:lens, :open},
@@ -64,7 +64,7 @@ defmodule Spectre.Lens do
 
     backend_opts =
       case config.backend do
-        %{module: module, options: options} -> Keyword.put(options, :driver, module)
+        %{module: module, options: options} -> Keyword.put(options, :backend, module)
         nil -> []
       end
 
@@ -73,7 +73,13 @@ defmodule Spectre.Lens do
       |> Keyword.merge(config.options)
       |> Keyword.merge(runtime_opts)
 
-    [{{:lens, :runtime}, {SpectreLens.Runtime, opts}}]
+    child_spec =
+      Supervisor.child_spec(
+        {SpectreLens.Runtime, opts},
+        id: {:spectre_lens_runtime, installation.id}
+      )
+
+    [{{:lens, :runtime}, child_spec}]
   end
 
   defmacro __using__(opts) do
