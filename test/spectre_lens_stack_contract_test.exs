@@ -1,15 +1,3 @@
-defmodule SpectreLens.StackContractAgent do
-  @moduledoc false
-
-  use Spectre.Agent, stack: SpectreLens.StackContractStack
-end
-
-defmodule SpectreLens.NoStackContractAgent do
-  @moduledoc false
-
-  use Spectre.Agent
-end
-
 defmodule SpectreLens.StackContractTest do
   use ExUnit.Case, async: true
 
@@ -24,11 +12,11 @@ defmodule SpectreLens.StackContractTest do
   alias SpectreLens.URLPolicy
 
   test "publishes the versioned perception package manifest" do
-    assert SpectreLens.version() == "0.1.4"
+    assert SpectreLens.version() == "0.1.5"
     assert {:ok, package} = V1.verify_installable(Spectre.Lens)
     assert package.id == :lens
-    assert package.version == "0.1.4"
-    assert package.spectre == "~> 0.1.4"
+    assert package.version == "0.1.5"
+    assert package.spectre == "~> 0.1.5"
     assert package.provides == [{:service, :lens}]
     assert package.operations == []
 
