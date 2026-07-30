@@ -18,9 +18,9 @@ defmodule Spectre.Lens do
 
   use Spectre.Stack.Installable,
     id: :lens,
-    version: "0.1.3",
+    version: "0.1.4",
     contract: 1,
-    spectre: "~> 0.1.3",
+    spectre: "~> 0.1.4",
     provides: [{:service, :lens}],
     actions: [
       {:lens, :open},

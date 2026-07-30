@@ -51,7 +51,7 @@ For a trusted mirror, pass both `--url` and `--sha256`.
 
 Starting a runtime never downloads a browser binary. Provision Lightpanda
 yourself or run the installer task explicitly before `SpectreLens.open/1`.
-Lens 0.1.3 requires Lightpanda `1.0.0-nightly.8362` or newer when the local
+Lens 0.1.4 requires Lightpanda `1.0.0-nightly.8362` or newer when the local
 Lightpanda backend is selected.
 
 You can also point Spectre Lens at an existing binary:
@@ -65,7 +65,7 @@ The path can also be configured with `config :spectre_lens,
 
 ## Spectre Stack Integration
 
-Spectre 0.1.3 can install Lens with a package-local, immutable configuration:
+Spectre 0.1.4 can install Lens with a package-local, immutable configuration:
 
 ```elixir
 defmodule MyApp.AI do
@@ -117,6 +117,30 @@ The `:open` Action returns a portable `%SpectreLens.TabRef{}`. Subsequent
 live `%SpectreLens.Tab{}` from the explicitly supplied runtime. Connection and
 request-guard PIDs therefore never enter Spectre State or a checkpointed
 `Spectre.Run`.
+
+### Agent Instance boundary
+
+For subject continuity, the application submits turns to the unique
+core-owned Instance and supplies an explicitly started Stack runtime only when
+a staged Lens Action is executed:
+
+```elixir
+{:ok, instance} =
+  Spectre.instance(MyApp.SpectreSupervisor, MyApp.Agent, account_id)
+
+{:ok, turn} =
+  Spectre.turn(instance, "inspect the account page",
+    stack_runtime: stack_runtime
+  )
+```
+
+Lens contributes perception Actions plus a caller-owned browser resource. It
+does not create or look up Agent Instances, enqueue Runs, retain Agent State,
+own the ready queue or Invocation registry, or autonomously schedule browser
+work. The Instance retains only portable values such as `TabRef`; live browser
+processes remain outside Runs and checkpoints. `wake on_change`, autonomous
+world observation, and continuity-plane lifecycle are later phases and are not
+implemented by 0.1.4.
 
 ## Quick Start
 
@@ -271,7 +295,7 @@ To open another page on a single-instance runtime, close the current tab first:
 
 ### Current Lightpanda serve options
 
-Lens 0.1.3 uses the current `serve` interface (`--http-timeout` and
+Lens 0.1.4 uses the current `serve` interface (`--http-timeout` and
 `--watchdog-ms`; the removed legacy `--timeout` flag is never emitted). It
 binds to loopback by default, disables the metrics endpoint, obeys
 `robots.txt`, and enables Lightpanda's private-network blocking for the default

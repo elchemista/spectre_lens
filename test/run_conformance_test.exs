@@ -5,6 +5,7 @@ defmodule SpectreLens.RunConformanceTest do
   alias Spectre.Context
   alias Spectre.Effect
   alias Spectre.Input
+  alias Spectre.Instance
   alias Spectre.Lens.ActionProvider
   alias Spectre.Run
   alias Spectre.State
@@ -87,6 +88,53 @@ defmodule SpectreLens.RunConformanceTest do
 
     assert {:error, {:unsupported_url_scheme, "file"}} =
              ActionProvider.execute(action, context, config: config)
+  end
+
+  test "a subject Instance retains multiple Runs without starting a Lens runtime" do
+    supervisor =
+      start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    subject = "lens-instance-#{System.unique_integer([:positive])}"
+
+    assert {:ok, instance} =
+             Spectre.instance(supervisor, StackContractAgent, subject, idle: false)
+
+    tasks =
+      for input <- ["first passive perception Run", "second passive perception Run"] do
+        Task.async(fn -> Spectre.ask(instance, input) end)
+      end
+
+    assert Enum.all?(
+             Task.await_many(tasks, 5_000),
+             &match?({:ok, %Spectre.Result{}}, &1)
+           )
+
+    assert_eventually(fn ->
+      info = Instance.info(instance)
+
+      map_size(info.runs) == 2 and info.ready == [] and
+        is_nil(info.active_run) and info.invocations == %{} and
+        Enum.all?(info.runs, fn {_id, run} -> run.status == :complete end)
+    end)
+
+    assert Spectre.state(instance).revision == 2
+    refute Map.has_key?(Spectre.state(instance).data, :lens)
+
+    assert [{_id, ^instance, :worker, [Instance]}] =
+             DynamicSupervisor.which_children(supervisor)
+  end
+
+  defp assert_eventually(fun, attempts \\ 100)
+
+  defp assert_eventually(fun, 0), do: assert(fun.())
+
+  defp assert_eventually(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
   end
 end
 
