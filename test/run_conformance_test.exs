@@ -1,3 +1,9 @@
+defmodule SpectreLens.RunConformanceTest.InvalidPolicy do
+  @moduledoc false
+
+  def loaded?, do: true
+end
+
 defmodule SpectreLens.RunConformanceTest do
   use ExUnit.Case, async: true
 
@@ -136,10 +142,4 @@ defmodule SpectreLens.RunConformanceTest do
       assert_eventually(fun, attempts - 1)
     end
   end
-end
-
-defmodule SpectreLens.RunConformanceTest.InvalidPolicy do
-  @moduledoc false
-
-  def loaded?, do: true
 end
