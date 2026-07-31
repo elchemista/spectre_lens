@@ -146,7 +146,7 @@ defmodule SpectreLens.RequestGuardContractTest do
     monitor = Process.monitor(guard)
     GenServer.stop(conn, :connection_lost)
 
-    assert_receive {:DOWN, ^monitor, :process, ^guard, {:connection_down, :connection_lost}}
+    assert_receive {:DOWN, ^monitor, :process, ^guard, {:connection_down, :connection_lost}}, 500
   end
 
   defp wait_until(fun, attempts \\ 100)

@@ -12,10 +12,10 @@ defmodule SpectreLens.StackContractTest do
   alias SpectreLens.URLPolicy
 
   test "publishes the versioned perception package manifest" do
-    assert SpectreLens.version() == "0.1.5"
+    assert SpectreLens.version() == "0.1.6"
     assert {:ok, package} = V1.verify_installable(Spectre.Lens)
     assert package.id == :lens
-    assert package.version == "0.1.5"
+    assert package.version == "0.1.6"
     assert package.spectre == "~> 0.1.5"
     assert package.provides == [{:service, :lens}]
     assert package.operations == []

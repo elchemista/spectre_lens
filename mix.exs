@@ -1,7 +1,7 @@
 defmodule SpectreLens.MixProject do
   use Mix.Project
 
-  @version "0.1.5"
+  @version "0.1.6"
   @source_url "https://github.com/elchemista/spectre_lens"
 
   def project do
@@ -41,15 +41,18 @@ defmodule SpectreLens.MixProject do
       {:websockex, "~> 0.5.1"},
       {:erlexec, "~> 2.3.4"},
       {:telemetry, "~> 1.4"},
-      {:ex_doc, "~> 0.34", only: [:dev, :test], optional: true, runtime: false},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 
   defp spectre_dep do
-    case System.get_env("SPECTRE_PATH") do
-      path when is_binary(path) and path != "" ->
+    case {System.get_env("SPECTRE_HEX_BUILD"), System.get_env("SPECTRE_PATH")} do
+      {hex_build, _path} when hex_build in ["1", "true"] ->
+        {:spectre, "~> 0.1.5"}
+
+      {_hex_build, path} when is_binary(path) and path != "" ->
         {:spectre, "~> 0.1.5", path: Path.expand(path)}
 
       _other ->
@@ -73,6 +76,7 @@ defmodule SpectreLens.MixProject do
       maintainers: ["Elchemista"],
       files: ~w(
         lib
+        docs
         mix.exs
         README.md
         CHANGELOG.md
@@ -90,10 +94,11 @@ defmodule SpectreLens.MixProject do
       main: "readme",
       extras: [
         "README.md",
+        "docs/PUBLIC_API.md",
         "CHANGELOG.md",
         "LICENSE"
       ],
-      source_ref: "main",
+      source_ref: "v#{@version}",
       source_url: @source_url
     ]
   end
