@@ -4,6 +4,20 @@ All notable changes to Spectre Lens are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-01
+
+### Changed
+
+- Raised the package, Action provider, and Stack compatibility contracts to
+  Spectre 0.2.0.
+- Verified browser perception, portable Tab references, request guards, and
+  staged Action execution against the Spectre 0.2.0 operational runtime.
+
+### Compatibility
+
+- Browser processes and protocol clients remain caller-owned resources and
+  are never embedded in core Run or Instance checkpoints.
+
 ## [0.1.6] - 2026-07-31
 
 ### Changed
@@ -39,7 +53,8 @@ All notable changes to Spectre Lens are documented in this file.
 - Autonomous `wake on_change` scheduling and continuity-plane lifecycle remain
   later migration phases.
 
-[Unreleased]: https://github.com/elchemista/spectre_lens/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/elchemista/spectre_lens/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/elchemista/spectre_lens/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/elchemista/spectre_lens/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/elchemista/spectre_lens/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/elchemista/spectre_lens/compare/v0.1.3...v0.1.4
