@@ -1,15 +1,13 @@
 defmodule Spectre.Lens.Extension do
   @moduledoc false
 
-  @behaviour Spectre.Extension
-
-  @impl true
+  @spec id() :: :lens
   def id, do: :lens
 
-  @impl true
+  @spec api_version() :: 1
   def api_version, do: 1
 
-  @impl true
+  @spec compile(module(), keyword()) :: {:ok, map()} | {:error, term()}
   def compile(_owner, opts) do
     case Keyword.fetch(opts, :stack_config) do
       {:ok, config} when is_map(config) -> {:ok, config}
@@ -18,10 +16,10 @@ defmodule Spectre.Lens.Extension do
     end
   end
 
-  @impl true
+  @spec agent_config(map()) :: keyword()
   def agent_config(config) when is_map(config), do: [lens: config]
 
-  @impl true
+  @spec action_providers(map()) :: [tuple()]
   def action_providers(config) when is_map(config) do
     [{:lens, Spectre.Lens.ActionProvider, config: config}]
   end

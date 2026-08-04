@@ -7,6 +7,10 @@ modules and callables listed below. Any module, function, macro, or callback
 not listed here is an implementation detail even when it is exported or
 visible in generated docs.
 
+The Spectre-facing modules are late-bound compatibility adapters. `:spectre`
+is not a compile-time or runtime dependency of Spectre Lens; it is fetched from
+GitHub only in this repository's test environment.
+
 Default arguments are expanded into every callable arity. For the listed
 modules, documented types, opaque types, and documented struct fields are also
 public. Modules with no callable row expose only their documented module,

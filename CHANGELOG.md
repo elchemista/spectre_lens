@@ -8,6 +8,9 @@ All notable changes to Spectre Lens are documented in this file.
 
 - Prevented `mix spectre.lens.install` and `mix spectre.lens.doctor` from
   starting the consumer application and its unrelated supervision tree.
+- Removed the compile-time and runtime dependency on Spectre. Stack and Action
+  integration now binds only when Spectre is separately available, while the
+  repository keeps its GitHub dependency test-only.
 
 ## [0.2.0] - 2026-08-01
 

@@ -1,6 +1,7 @@
 defmodule Spectre.Lens do
   @moduledoc """
-  Stack-installable facade for the `SpectreLens` perception library.
+  Optional, late-bound Spectre Stack facade for the standalone `SpectreLens`
+  perception library.
 
   Lens owns its package-local `backend` and `policy` declarations:
 
@@ -9,30 +10,18 @@ defmodule Spectre.Lens do
         policy MyApp.WebPolicy
       end
 
-  Configuration stays immutable. Browser processes are isolated under an
-  explicitly started `Spectre.Stack.Runtime`; Agents receive the provider
-  binding without owning a second compiler.
+  This module compiles without Spectre. When Spectre is present, configuration
+  stays immutable and browser processes are isolated under an explicitly
+  started `Spectre.Stack.Runtime`; Agents receive the provider binding without
+  owning a second compiler.
   """
 
-  alias Spectre.Stack.DSL
-
-  use Spectre.Stack.Installable,
-    id: :lens,
-    version: "0.2.0",
-    contract: 1,
-    spectre: "~> 0.2.0",
-    provides: [{:service, :lens}],
-    actions: [
-      {:lens, :open},
-      {:lens, :look},
-      {:lens, :discover},
-      {:lens, :act},
-      {:lens, :export}
-    ],
-    resources: [{:lens, :runtime}],
-    agent_extensions: [Spectre.Lens.Extension],
-    dsl: __MODULE__,
-    metadata: %{role: :perception}
+  @version "0.2.0"
+  @spectre_definition Module.concat(["Spectre", "Definition"])
+  @spectre_extension Module.concat(["Spectre", "Extension"])
+  @spectre_stack Module.concat(["Spectre", "Stack"])
+  @spectre_stack_dsl Module.concat(["Spectre", "Stack", "DSL"])
+  @spectre_stack_runtime Module.concat(["Spectre", "Stack", "Runtime"])
 
   @type component_config :: %{
           required(:module) => module(),
@@ -46,19 +35,43 @@ defmodule Spectre.Lens do
         }
 
   @doc false
-  @impl Spectre.Stack.Installable
-  @spec compile(keyword(), Macro.t() | nil, Macro.Env.t()) :: {:ok, config()}
-  def compile(opts, block, caller) do
-    config =
-      block
-      |> DSL.compile!(caller, backend: [1, 2], policy: [1, 2])
-      |> Enum.reduce(%{backend: nil, policy: nil}, &put_component!/2)
-      |> Map.put(:options, opts)
-
-    {:ok, config}
+  @spec manifest() :: keyword()
+  def manifest do
+    [
+      id: :lens,
+      module: __MODULE__,
+      version: @version,
+      contract: 1,
+      spectre: "~> 0.2.0",
+      provides: [{:service, :lens}],
+      actions: [
+        {:lens, :open},
+        {:lens, :look},
+        {:lens, :discover},
+        {:lens, :act},
+        {:lens, :export}
+      ],
+      resources: [{:lens, :runtime}],
+      agent_extensions: [Spectre.Lens.Extension],
+      dsl: __MODULE__,
+      metadata: %{role: :perception}
+    ]
   end
 
-  @impl Spectre.Stack.Installable
+  @doc false
+  @spec compile(keyword(), Macro.t() | nil, Macro.Env.t()) :: {:ok, config()}
+  def compile(opts, block, caller) do
+    with :ok <- ensure_exported(@spectre_stack_dsl, :compile!, 3) do
+      config =
+        @spectre_stack_dsl
+        |> apply(:compile!, [block, caller, [backend: [1, 2], policy: [1, 2]]])
+        |> Enum.reduce(%{backend: nil, policy: nil}, &put_component!/2)
+        |> Map.put(:options, opts)
+
+      {:ok, config}
+    end
+  end
+
   def child_specs(installation, runtime_opts) do
     config = installation.config
 
@@ -84,10 +97,10 @@ defmodule Spectre.Lens do
 
   defmacro __using__(opts) do
     quote do
-      Spectre.Extension.register!(
-        __MODULE__,
-        Spectre.Lens.Extension,
-        unquote(opts)
+      apply(
+        unquote(@spectre_extension),
+        :register!,
+        [__MODULE__, Spectre.Lens.Extension, unquote(opts)]
       )
     end
   end
@@ -97,8 +110,9 @@ defmodule Spectre.Lens do
   """
   @spec config(module()) :: {:ok, config()} | {:error, term()}
   def config(agent) when is_atom(agent) do
-    with {:ok, mount} <- Spectre.Extension.fetch(agent, :lens),
-         config when is_map(config) <- mount.compiled do
+    with :ok <- ensure_exported(@spectre_extension, :fetch, 2),
+         {:ok, mount} <- apply(@spectre_extension, :fetch, [agent, :lens]),
+         config when is_map(config) <- Map.get(mount, :compiled) do
       {:ok, config}
     else
       {:error, _reason} = error -> error
@@ -133,16 +147,27 @@ defmodule Spectre.Lens do
   defp resolve_stack_runtime(_agent, nil), do: {:error, :lens_runtime_required}
 
   defp resolve_stack_runtime(agent, supervisor) do
-    with %{stack: stack} when is_atom(stack) and not is_nil(stack) <-
-           Spectre.Definition.fetch!(agent),
-         {:ok, ref} <- Spectre.Stack.resolve(stack, :resource, {:lens, :runtime}),
-         {:ok, pid} <- Spectre.Stack.Runtime.resolve(supervisor, ref) do
+    with :ok <- ensure_exported(@spectre_definition, :fetch!, 1),
+         :ok <- ensure_exported(@spectre_stack, :resolve, 3),
+         :ok <- ensure_exported(@spectre_stack_runtime, :resolve, 2),
+         %{stack: stack} when is_atom(stack) and not is_nil(stack) <-
+           apply(@spectre_definition, :fetch!, [agent]),
+         {:ok, ref} <- apply(@spectre_stack, :resolve, [stack, :resource, {:lens, :runtime}]),
+         {:ok, pid} <- apply(@spectre_stack_runtime, :resolve, [supervisor, ref]) do
       {:ok, pid}
     else
       %{stack: nil} -> {:error, :lens_stack_required}
       {:error, _reason} = error -> error
       _other -> {:error, :invalid_lens_stack_binding}
     end
+  end
+
+  @spec ensure_exported(module(), atom(), non_neg_integer()) ::
+          :ok | {:error, :spectre_not_available}
+  defp ensure_exported(module, function, arity) do
+    if Code.ensure_loaded?(module) and function_exported?(module, function, arity),
+      do: :ok,
+      else: {:error, :spectre_not_available}
   end
 
   @spec put_component!({:backend | :policy, [term()]}, map()) :: map()

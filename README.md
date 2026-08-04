@@ -8,6 +8,11 @@ instances; a `SpectreLens.Protocol` adapter implements tabs, views, actions,
 exports, sessions, and events. Lightpanda is the default local backend, not a
 dependency of the Lens runtime contract.
 
+Lens has no compile-time or runtime dependency on `:spectre`. Its direct
+browser, perception, session, and export APIs work as a standalone library.
+The repository uses Spectre from GitHub only in the test environment to verify
+the optional late-bound Stack and Action-provider integration.
+
 The exact `0.2.0` compatibility surface is published in the
 [public API manifest](docs/PUBLIC_API.md).
 
@@ -83,9 +88,10 @@ You can also point Spectre Lens at an existing binary:
 The path can also be configured with `config :spectre_lens,
 :lightpanda_path, "/path/to/lightpanda"` or `LIGHTPANDA_PATH`.
 
-## Spectre Stack Integration
+## Optional Spectre Stack Integration
 
-Spectre 0.2.0 can install Lens with a package-local, immutable configuration:
+When an application separately includes Spectre 0.2.0, it can install Lens with
+a package-local, immutable configuration:
 
 ```elixir
 defmodule MyApp.AI do
