@@ -63,8 +63,10 @@ defmodule Spectre.Lens do
   def compile(opts, block, caller) do
     with :ok <- ensure_exported(@spectre_stack_dsl, :compile!, 3) do
       config =
-        @spectre_stack_dsl
-        |> apply(:compile!, [block, caller, [backend: [1, 2], policy: [1, 2]]])
+        invoke(@spectre_stack_dsl, :compile!, block, caller,
+          backend: [1, 2],
+          policy: [1, 2]
+        )
         |> Enum.reduce(%{backend: nil, policy: nil}, &put_component!/2)
         |> Map.put(:options, opts)
 
@@ -97,11 +99,8 @@ defmodule Spectre.Lens do
 
   defmacro __using__(opts) do
     quote do
-      apply(
-        unquote(@spectre_extension),
-        :register!,
-        [__MODULE__, Spectre.Lens.Extension, unquote(opts)]
-      )
+      register = Function.capture(unquote(@spectre_extension), :register!, 3)
+      register.(__MODULE__, Spectre.Lens.Extension, unquote(opts))
     end
   end
 
@@ -111,7 +110,7 @@ defmodule Spectre.Lens do
   @spec config(module()) :: {:ok, config()} | {:error, term()}
   def config(agent) when is_atom(agent) do
     with :ok <- ensure_exported(@spectre_extension, :fetch, 2),
-         {:ok, mount} <- apply(@spectre_extension, :fetch, [agent, :lens]),
+         {:ok, mount} <- invoke(@spectre_extension, :fetch, agent, :lens),
          config when is_map(config) <- Map.get(mount, :compiled) do
       {:ok, config}
     else
@@ -151,9 +150,9 @@ defmodule Spectre.Lens do
          :ok <- ensure_exported(@spectre_stack, :resolve, 3),
          :ok <- ensure_exported(@spectre_stack_runtime, :resolve, 2),
          %{stack: stack} when is_atom(stack) and not is_nil(stack) <-
-           apply(@spectre_definition, :fetch!, [agent]),
-         {:ok, ref} <- apply(@spectre_stack, :resolve, [stack, :resource, {:lens, :runtime}]),
-         {:ok, pid} <- apply(@spectre_stack_runtime, :resolve, [supervisor, ref]) do
+           invoke(@spectre_definition, :fetch!, agent),
+         {:ok, ref} <- invoke(@spectre_stack, :resolve, stack, :resource, {:lens, :runtime}),
+         {:ok, pid} <- invoke(@spectre_stack_runtime, :resolve, supervisor, ref) do
       {:ok, pid}
     else
       %{stack: nil} -> {:error, :lens_stack_required}
@@ -168,6 +167,24 @@ defmodule Spectre.Lens do
     if Code.ensure_loaded?(module) and function_exported?(module, function, arity),
       do: :ok,
       else: {:error, :spectre_not_available}
+  end
+
+  @spec invoke(module(), atom(), term()) :: term()
+  defp invoke(module, function, argument) do
+    fun = Function.capture(module, function, 1)
+    fun.(argument)
+  end
+
+  @spec invoke(module(), atom(), term(), term()) :: term()
+  defp invoke(module, function, argument1, argument2) do
+    fun = Function.capture(module, function, 2)
+    fun.(argument1, argument2)
+  end
+
+  @spec invoke(module(), atom(), term(), term(), term()) :: term()
+  defp invoke(module, function, argument1, argument2, argument3) do
+    fun = Function.capture(module, function, 3)
+    fun.(argument1, argument2, argument3)
   end
 
   @spec put_component!({:backend | :policy, [term()]}, map()) :: map()

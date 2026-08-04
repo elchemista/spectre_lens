@@ -159,13 +159,9 @@ defmodule Spectre.Lens.ActionProvider do
         {:error, {:lens_policy_unavailable, module}}
 
       function_exported?(module, :authorize, 3) ->
-        case apply(module, :authorize, [operation, args, Keyword.put(options, :context, ctx)]) do
-          :ok -> :ok
-          true -> :ok
-          false -> {:error, {:lens_policy_denied, operation}}
-          {:error, _reason} = error -> error
-          other -> {:error, {:invalid_lens_policy_reply, module, other}}
-        end
+        module
+        |> invoke(:authorize, operation, args, Keyword.put(options, :context, ctx))
+        |> normalize_authorization(module, operation)
 
       true ->
         {:error, {:invalid_lens_policy, module, :authorize}}
@@ -173,6 +169,17 @@ defmodule Spectre.Lens.ActionProvider do
   end
 
   defp authorize(_config, _action, _ctx), do: :ok
+
+  @spec normalize_authorization(term(), module(), atom()) :: :ok | {:error, term()}
+  defp normalize_authorization(reply, _module, _operation) when reply in [:ok, true], do: :ok
+
+  defp normalize_authorization(false, _module, operation),
+    do: {:error, {:lens_policy_denied, operation}}
+
+  defp normalize_authorization({:error, _reason} = error, _module, _operation), do: error
+
+  defp normalize_authorization(other, module, _operation),
+    do: {:error, {:invalid_lens_policy_reply, module, other}}
 
   @spec policy_opts(map(), keyword()) :: keyword()
   defp policy_opts(config, runtime_opts) do
@@ -244,7 +251,7 @@ defmodule Spectre.Lens.ActionProvider do
   @spec build_spec(map()) :: map()
   defp build_spec(attrs) do
     if Code.ensure_loaded?(@spec_module) and function_exported?(@spec_module, :new, 1) do
-      apply(@spec_module, :new, [attrs])
+      invoke(@spec_module, :new, attrs)
     else
       Map.put(attrs, :schema_hash, fallback_schema_hash(attrs))
     end
@@ -333,14 +340,28 @@ defmodule Spectre.Lens.ActionProvider do
     if Code.ensure_loaded?(@journal_module) and
          function_exported?(@journal_module, :record, 3) do
       _journal =
-        apply(@journal_module, :record, [
+        invoke(
+          @journal_module,
+          :record,
           agent,
           :lens_operation,
           %{operation: operation, outcome: outcome}
-        ])
+        )
     end
 
     :ok
+  end
+
+  @spec invoke(module(), atom(), term()) :: term()
+  defp invoke(module, function, argument) do
+    fun = Function.capture(module, function, 1)
+    fun.(argument)
+  end
+
+  @spec invoke(module(), atom(), term(), term(), term()) :: term()
+  defp invoke(module, function, argument1, argument2, argument3) do
+    fun = Function.capture(module, function, 3)
+    fun.(argument1, argument2, argument3)
   end
 
   @spec value(map(), atom()) :: term()
