@@ -4,6 +4,11 @@ All notable changes to Spectre Lens are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented `mix spectre.lens.install` and `mix spectre.lens.doctor` from
+  starting the consumer application and its unrelated supervision tree.
+
 ## [0.2.0] - 2026-08-01
 
 ### Changed
