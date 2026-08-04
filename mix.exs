@@ -1,7 +1,7 @@
 defmodule SpectreLens.MixProject do
   use Mix.Project
 
-  @version "0.1.6"
+  @version "0.2.0"
   @source_url "https://github.com/elchemista/spectre_lens"
 
   def project do
@@ -35,7 +35,7 @@ defmodule SpectreLens.MixProject do
 
   defp deps do
     [
-      spectre_dep(),
+      {:spectre, github: "elchemista/spectre", branch: "main", only: :test},
       {:jason, "~> 1.4.5"},
       {:req, "~> 0.7.1"},
       {:websockex, "~> 0.5.1"},
@@ -45,19 +45,6 @@ defmodule SpectreLens.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
-  end
-
-  defp spectre_dep do
-    case {System.get_env("SPECTRE_HEX_BUILD"), System.get_env("SPECTRE_PATH")} do
-      {hex_build, _path} when hex_build in ["1", "true"] ->
-        {:spectre, "~> 0.1.5"}
-
-      {_hex_build, path} when is_binary(path) and path != "" ->
-        {:spectre, "~> 0.1.5", path: Path.expand(path)}
-
-      _other ->
-        {:spectre, "~> 0.1.5", github: "elchemista/spectre", branch: "main"}
-    end
   end
 
   defp aliases do

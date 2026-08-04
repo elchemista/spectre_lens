@@ -1,18 +1,20 @@
 defmodule Spectre.Lens.ActionProvider do
   @moduledoc """
-  Spectre action-provider adapter for the Lens browser boundary.
+  Late-bound Spectre action-provider adapter for the Lens browser boundary.
+
+  It returns ordinary maps when Spectre is absent and native Action Specs when
+  Spectre is loaded, keeping the Lens runtime dependency graph standalone.
 
   Planner visibility is opt-in through the installation option
   `planner_exposure: :all | [operation]`. Deterministic handlers may always
   address the provider as `via: :lens`.
   """
 
-  @behaviour Spectre.Action.Provider
-
-  alias Spectre.Action
-  alias Spectre.Action.Spec
   alias SpectreLens.Tab
   alias SpectreLens.TabRef
+
+  @journal_module Module.concat(["Spectre", "Journal"])
+  @spec_module Module.concat(["Spectre", "Action", "Spec"])
 
   @operations [
     {:open, :read, "Open a browser tab for a URL"},
@@ -22,12 +24,12 @@ defmodule Spectre.Lens.ActionProvider do
     {:export, :read, "Export a page artifact from a tab"}
   ]
 
-  @impl true
+  @spec actions(keyword()) :: [map()]
   def actions(opts) do
     config = Keyword.fetch!(opts, :config)
 
     Enum.map(@operations, fn {name, mode, description} ->
-      Spec.new(%{
+      build_spec(%{
         id: "lens.#{name}",
         name: name,
         via: :lens,
@@ -40,27 +42,37 @@ defmodule Spectre.Lens.ActionProvider do
     end)
   end
 
-  @impl true
-  def execute(%Action{via: :lens} = action, ctx, opts) do
+  @spec execute(map(), map(), keyword()) :: {:ok, term()} | {:error, term()}
+  def execute(action, ctx, opts) when is_map(action) and is_map(ctx) do
     config = Keyword.fetch!(opts, :config)
+    operation = value(action, :name)
+    args = value(action, :args) || %{}
+    agent = value(ctx, :agent)
+    context_opts = value(ctx, :opts) || []
 
-    with :ok <- known_operation(action.name),
+    with :ok <- matching_provider(action),
+         :ok <- known_operation(operation),
          :ok <- authorize(config, action, ctx),
-         {:ok, runtime} <- Spectre.Lens.runtime(ctx.agent, ctx.opts),
-         result <- execute_operation(action.name, action.args, runtime, config, ctx.opts) do
-      record(ctx.agent, action.name, result)
+         {:ok, runtime} <- Spectre.Lens.runtime(agent, context_opts),
+         result <- execute_operation(operation, args, runtime, config, context_opts) do
+      record(agent, operation, result)
       result
     end
   end
 
-  def execute(%Action{} = action, _ctx, _opts),
-    do: {:error, {:lens_action_provider_mismatch, action.via}}
+  def execute(action, _ctx, _opts),
+    do: {:error, {:invalid_lens_action, action}}
 
-  @impl true
-  def schema_hash(%Action{} = action, opts) do
-    case Enum.find(actions(opts), &(&1.name == action.name and &1.via == action.via)) do
-      %Spec{schema_hash: hash} -> hash
+  @spec schema_hash(map(), keyword()) :: String.t() | nil
+  def schema_hash(action, opts) when is_map(action) do
+    actions(opts)
+    |> Enum.find(
+      &(value(&1, :name) == value(action, :name) and
+          value(&1, :via) == value(action, :via))
+    )
+    |> case do
       nil -> nil
+      spec -> value(spec, :schema_hash)
     end
   end
 
@@ -137,20 +149,19 @@ defmodule Spectre.Lens.ActionProvider do
     end
   end
 
-  @spec authorize(map(), Action.t(), Spectre.Context.t()) :: :ok | {:error, term()}
+  @spec authorize(map(), map(), map()) :: :ok | {:error, term()}
   defp authorize(%{policy: %{module: module, options: options}}, action, ctx) do
+    operation = value(action, :name)
+    args = value(action, :args) || %{}
+
     cond do
       not Code.ensure_loaded?(module) ->
         {:error, {:lens_policy_unavailable, module}}
 
       function_exported?(module, :authorize, 3) ->
-        case module.authorize(action.name, action.args, Keyword.put(options, :context, ctx)) do
-          :ok -> :ok
-          true -> :ok
-          false -> {:error, {:lens_policy_denied, action.name}}
-          {:error, _reason} = error -> error
-          other -> {:error, {:invalid_lens_policy_reply, module, other}}
-        end
+        module
+        |> invoke(:authorize, operation, args, Keyword.put(options, :context, ctx))
+        |> normalize_authorization(module, operation)
 
       true ->
         {:error, {:invalid_lens_policy, module, :authorize}}
@@ -158,6 +169,17 @@ defmodule Spectre.Lens.ActionProvider do
   end
 
   defp authorize(_config, _action, _ctx), do: :ok
+
+  @spec normalize_authorization(term(), module(), atom()) :: :ok | {:error, term()}
+  defp normalize_authorization(reply, _module, _operation) when reply in [:ok, true], do: :ok
+
+  defp normalize_authorization(false, _module, operation),
+    do: {:error, {:lens_policy_denied, operation}}
+
+  defp normalize_authorization({:error, _reason} = error, _module, _operation), do: error
+
+  defp normalize_authorization(other, module, _operation),
+    do: {:error, {:invalid_lens_policy_reply, module, other}}
 
   @spec policy_opts(map(), keyword()) :: keyword()
   defp policy_opts(config, runtime_opts) do
@@ -226,6 +248,28 @@ defmodule Spectre.Lens.ActionProvider do
     }
   end
 
+  @spec build_spec(map()) :: map()
+  defp build_spec(attrs) do
+    if Code.ensure_loaded?(@spec_module) and function_exported?(@spec_module, :new, 1) do
+      invoke(@spec_module, :new, attrs)
+    else
+      Map.put(attrs, :schema_hash, fallback_schema_hash(attrs))
+    end
+  end
+
+  @spec fallback_schema_hash(map()) :: String.t()
+  defp fallback_schema_hash(attrs) do
+    :sha256
+    |> :crypto.hash(
+      :erlang.term_to_binary(
+        {Map.fetch!(attrs, :via), Map.fetch!(attrs, :name), Map.get(attrs, :mode),
+         Map.get(attrs, :schema, %{})},
+        [:deterministic]
+      )
+    )
+    |> Base.encode16(case: :lower)
+  end
+
   @spec resolve_tab(term(), term()) :: {:ok, Tab.t()} | {:error, term()}
   defp resolve_tab(runtime, %TabRef{} = ref), do: SpectreLens.resolve_tab(runtime, ref)
   defp resolve_tab(_runtime, %Tab{}), do: {:error, :nonportable_lens_tab}
@@ -238,6 +282,14 @@ defmodule Spectre.Lens.ActionProvider do
       else: {:error, {:unsupported_lens_operation, name}}
   end
 
+  @spec matching_provider(map()) :: :ok | {:error, term()}
+  defp matching_provider(action) do
+    case value(action, :via) do
+      :lens -> :ok
+      other -> {:error, {:lens_action_provider_mismatch, other}}
+    end
+  end
+
   @spec required(map(), atom()) :: {:ok, term()} | {:error, term()}
   defp required(args, key) do
     case arg(args, key) do
@@ -248,10 +300,7 @@ defmodule Spectre.Lens.ActionProvider do
 
   @spec arg(map(), atom()) :: term()
   defp arg(args, key) when is_map(args) do
-    case Map.fetch(args, key) do
-      {:ok, value} -> value
-      :error -> Map.get(args, Atom.to_string(key))
-    end
+    value(args, key)
   end
 
   @spec keyword_arg(map(), atom()) :: keyword()
@@ -288,9 +337,33 @@ defmodule Spectre.Lens.ActionProvider do
         {:error, _reason} -> :error
       end
 
-    _journal =
-      Spectre.Journal.record(agent, :lens_operation, %{operation: operation, outcome: outcome})
+    if Code.ensure_loaded?(@journal_module) and
+         function_exported?(@journal_module, :record, 3) do
+      _journal =
+        invoke(
+          @journal_module,
+          :record,
+          agent,
+          :lens_operation,
+          %{operation: operation, outcome: outcome}
+        )
+    end
 
     :ok
   end
+
+  @spec invoke(module(), atom(), term()) :: term()
+  defp invoke(module, function, argument) do
+    fun = Function.capture(module, function, 1)
+    fun.(argument)
+  end
+
+  @spec invoke(module(), atom(), term(), term(), term()) :: term()
+  defp invoke(module, function, argument1, argument2, argument3) do
+    fun = Function.capture(module, function, 3)
+    fun.(argument1, argument2, argument3)
+  end
+
+  @spec value(map(), atom()) :: term()
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

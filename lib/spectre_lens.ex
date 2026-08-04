@@ -1,6 +1,6 @@
 defmodule SpectreLens do
   @moduledoc """
-  Agent-first, backend-neutral browser perception for Spectre.
+  Agent-first, backend-neutral browser perception for Elixir applications.
 
   Spectre Lens returns compact page views designed for agents: markdown,
   semantic structure, interactive elements, forms, links, structured data and

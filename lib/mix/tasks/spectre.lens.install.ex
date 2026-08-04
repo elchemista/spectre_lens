@@ -23,10 +23,10 @@ defmodule Mix.Tasks.Spectre.Lens.Install do
 
   @impl Mix.Task
   def run(argv) do
-    Mix.Task.run("app.start")
     {opts, _args, invalid} = OptionParser.parse(argv, strict: @switches)
     invalid == [] || Mix.raise("invalid options: #{inspect(invalid)}")
     mirror_options_valid?(opts) || Mix.raise("--url and --sha256 must be provided together")
+    ensure_lens_started!()
 
     install_opts =
       []
@@ -47,5 +47,15 @@ defmodule Mix.Tasks.Spectre.Lens.Install do
 
   defp mirror_options_valid?(opts) do
     is_binary(opts[:url]) == is_binary(opts[:sha256])
+  end
+
+  defp ensure_lens_started! do
+    case Application.ensure_all_started(:spectre_lens) do
+      {:ok, _applications} ->
+        :ok
+
+      {:error, {application, reason}} ->
+        Mix.raise("could not start #{application}: #{inspect(reason)}")
+    end
   end
 end
