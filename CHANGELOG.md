@@ -12,6 +12,11 @@ All notable changes to Spectre Lens are documented in this file.
   integration now binds only when Spectre is separately available, while the
   repository keeps its GitHub dependency test-only.
 
+### Changed
+
+- Made distribution GitHub-only by removing Hex package metadata and package
+  build CI, and pinned the test dependency to the Spectre GitHub `0.2.0` tag.
+
 ## [0.2.0] - 2026-08-01
 
 ### Changed
