@@ -11,6 +11,26 @@ All notable changes to Spectre Lens are documented in this file.
 - Removed the compile-time and runtime dependency on Spectre. Stack and Action
   integration now binds only when Spectre is separately available, while the
   repository keeps its GitHub dependency test-only.
+- Hardened CDP commands and event waits against malformed inputs, JSON encoding
+  failures, dead transports, invalid discovery endpoints, and malformed browser
+  responses without leaking pending callers or crashing the shared connection.
+- Made Lightpanda installation race-safe and checksum-preserving through private
+  staging directories, atomic destination commits, bounded startup polling, and
+  validation of platform, path, timeout, boolean, and downloader boundaries.
+- Corrected discovery result ordering, Page polling deadlines and option
+  forwarding, selector escaping, session JSON normalization, watcher ownership,
+  and malformed `llms.txt` fetcher/header handling.
+
+### Performance
+
+- Bounded selector, document-readiness, and Lightpanda startup polling by the
+  actual remaining deadline, and capped runtime worker shutdown by one global
+  timeout instead of multiplying it by the number of pending tabs.
+
+### Changed
+
+- Made distribution GitHub-only by removing Hex package metadata and package
+  build CI, and pinned the test dependency to the Spectre GitHub `0.2.0` tag.
 
 ## [0.2.0] - 2026-08-01
 

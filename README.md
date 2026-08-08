@@ -10,8 +10,8 @@ dependency of the Lens runtime contract.
 
 Lens has no compile-time or runtime dependency on `:spectre`. Its direct
 browser, perception, session, and export APIs work as a standalone library.
-The repository uses Spectre from GitHub only in the test environment to verify
-the optional late-bound Stack and Action-provider integration.
+The repository uses the Spectre `0.2.0` GitHub tag only in the test environment
+to verify the optional late-bound Stack and Action-provider integration.
 
 The exact `0.2.0` compatibility surface is published in the
 [public API manifest](docs/PUBLIC_API.md).
@@ -28,8 +28,7 @@ own policy, idempotency, Effect execution, and operational-loop state.
 Version `0.1.6` is a consolidation-only release with no new runtime feature and
 no intentional breaking change. Elixir 1.19 on Erlang/OTP 28 is the initially
 guaranteed pair. Uniform CI runs format, warnings-as-errors compilation, tests,
-non-strict Credo, Dialyzer, ExDoc, and local package validation with no
-publication. Its explicit API
+non-strict Credo, Dialyzer, and ExDoc. Its explicit API
 manifest is the compatibility fence while Lens participates in later `0.2.0`
 work.
 
@@ -51,16 +50,18 @@ work.
 
 ## Installation
 
-Add the package to your Mix project once published or through a local/path
-dependency while developing:
+Add the GitHub tag to your Mix project, or use a local/path dependency while
+developing:
 
 ```elixir
 def deps do
   [
-    {:spectre_lens, github: "elchemista/spectre_lens"}
+    {:spectre_lens, github: "elchemista/spectre_lens", tag: "v0.2.0"}
   ]
 end
 ```
+
+Spectre Lens is distributed exclusively from GitHub; there is no Hex package.
 
 Install or inspect the optional local Lightpanda binary:
 

@@ -240,11 +240,33 @@ defmodule SpectreLens.LlmsTxt do
     max_bytes = Keyword.get(opts, :max_bytes, @default_max_bytes)
     policy_opts = URLPolicy.take_options(opts)
 
-    with {:ok, url} <- URLPolicy.validate(url, policy_opts),
-         {:ok, body} <- fetcher.(url, opts) do
-      validate_body(body, max_bytes)
+    with :ok <- validate_fetcher(fetcher),
+         :ok <- validate_max_bytes(max_bytes),
+         {:ok, url} <- URLPolicy.validate(url, policy_opts) do
+      call_fetcher(fetcher, url, opts, max_bytes)
     end
   end
+
+  @spec call_fetcher(fetcher(), binary(), keyword(), non_neg_integer()) :: fetch_result()
+  defp call_fetcher(fetcher, url, opts, max_bytes) do
+    case fetcher.(url, opts) do
+      {:ok, body} -> validate_body(body, max_bytes)
+      {:error, _reason} = error -> error
+      other -> {:error, {:invalid_llms_fetcher_reply, value_type(other)}}
+    end
+  rescue
+    error -> {:error, {:llms_fetcher_failed, error}}
+  catch
+    kind, reason -> {:error, {:llms_fetcher_failed, {kind, reason}}}
+  end
+
+  @spec validate_fetcher(term()) :: :ok | {:error, term()}
+  defp validate_fetcher(fetcher) when is_function(fetcher, 2), do: :ok
+  defp validate_fetcher(fetcher), do: {:error, {:invalid_llms_fetcher, value_type(fetcher)}}
+
+  @spec validate_max_bytes(term()) :: :ok | {:error, term()}
+  defp validate_max_bytes(max_bytes) when is_integer(max_bytes) and max_bytes >= 0, do: :ok
+  defp validate_max_bytes(max_bytes), do: {:error, {:invalid_max_bytes, max_bytes}}
 
   @spec default_fetch(binary(), keyword()) :: fetch_result()
   defp default_fetch(url, opts) do
@@ -293,12 +315,27 @@ defmodule SpectreLens.LlmsTxt do
   defp fetch_link_header(page_url, opts) do
     header_fetcher = Keyword.get(opts, :header_fetcher, &default_header_fetch/2)
 
-    with {:ok, page_url} <- URLPolicy.validate(page_url, URLPolicy.take_options(opts)),
-         {:ok, headers} <- header_fetcher.(page_url, opts) do
+    with true <- is_function(header_fetcher, 2),
+         {:ok, page_url} <- URLPolicy.validate(page_url, URLPolicy.take_options(opts)),
+         {:ok, headers} <- call_header_fetcher(header_fetcher, page_url, opts) do
       get_header(headers, "link")
     else
       _ -> nil
     end
+  end
+
+  @spec call_header_fetcher((binary(), keyword() -> term()), binary(), keyword()) ::
+          {:ok, term()} | {:error, term()}
+  defp call_header_fetcher(fetcher, url, opts) do
+    case fetcher.(url, opts) do
+      {:ok, headers} -> {:ok, headers}
+      {:error, _reason} = error -> error
+      other -> {:error, {:invalid_llms_header_fetcher_reply, value_type(other)}}
+    end
+  rescue
+    error -> {:error, {:llms_header_fetcher_failed, error}}
+  catch
+    kind, reason -> {:error, {:llms_header_fetcher_failed, {kind, reason}}}
   end
 
   @spec default_header_fetch(binary(), keyword()) :: {:ok, term()} | {:error, term()}
@@ -319,8 +356,12 @@ defmodule SpectreLens.LlmsTxt do
 
   defp get_header(headers, name) when is_list(headers) do
     headers
-    |> Enum.find_value(fn {key, value} ->
-      if String.downcase(to_string(key)) == String.downcase(name), do: value
+    |> Enum.find_value(fn
+      {key, value} ->
+        if normalized_header_name(key) == String.downcase(name), do: value
+
+      _invalid ->
+        nil
     end)
     |> header_value()
   end
@@ -329,9 +370,22 @@ defmodule SpectreLens.LlmsTxt do
 
   @spec header_value(term()) :: binary() | nil
   defp header_value(nil), do: nil
-  defp header_value(values) when is_list(values), do: Enum.join(values, ", ")
+
+  defp header_value(values) when is_list(values) do
+    if Enum.all?(values, &is_binary/1), do: Enum.join(values, ", "), else: nil
+  end
+
   defp header_value(value) when is_binary(value), do: value
-  defp header_value(value), do: to_string(value)
+  defp header_value(value) when is_atom(value) or is_number(value), do: to_string(value)
+  defp header_value(_value), do: nil
+
+  @spec normalized_header_name(term()) :: binary() | nil
+  defp normalized_header_name(key) when is_binary(key), do: String.downcase(key)
+
+  defp normalized_header_name(key) when is_atom(key),
+    do: key |> Atom.to_string() |> String.downcase()
+
+  defp normalized_header_name(_key), do: nil
 
   @spec parse_link_header(binary() | nil, binary()) :: [binary()]
   defp parse_link_header(nil, _page_url), do: []
@@ -355,12 +409,18 @@ defmodule SpectreLens.LlmsTxt do
   @spec safe_request(:get | :head, binary(), keyword()) ::
           {:ok, Req.Response.t()} | {:error, term()}
   defp safe_request(method, url, opts) do
-    case Keyword.get(opts, :max_redirects, 5) do
-      redirects when is_integer(redirects) and redirects >= 0 ->
-        do_safe_request(method, url, opts, redirects)
+    redirects = Keyword.get(opts, :max_redirects, 5)
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
 
-      redirects ->
+    cond do
+      not (is_integer(redirects) and redirects >= 0) ->
         {:error, {:invalid_max_redirects, redirects}}
+
+      not (is_integer(timeout) and timeout >= 0) ->
+        {:error, {:invalid_llms_timeout, timeout}}
+
+      true ->
+        do_safe_request(method, url, opts, redirects)
     end
   end
 
@@ -435,9 +495,27 @@ defmodule SpectreLens.LlmsTxt do
   @spec llms_rel?(binary()) :: boolean()
   defp llms_rel?(rel), do: rel |> String.downcase() |> String.contains?("llms")
 
-  @spec validate_body(binary(), non_neg_integer()) :: fetch_result()
-  defp validate_body(body, max_bytes) when byte_size(body) <= max_bytes, do: {:ok, body}
-  defp validate_body(_body, max_bytes), do: {:error, {:body_too_large, max_bytes}}
+  @spec validate_body(term(), non_neg_integer()) :: fetch_result()
+  defp validate_body(body, max_bytes) when is_binary(body) do
+    if byte_size(body) <= max_bytes,
+      do: {:ok, body},
+      else: {:error, {:body_too_large, max_bytes}}
+  end
+
+  defp validate_body(body, _max_bytes),
+    do: {:error, {:invalid_llms_body, value_type(body)}}
+
+  @spec value_type(term()) :: atom()
+  defp value_type(value) when is_atom(value), do: :atom
+  defp value_type(value) when is_binary(value), do: :binary
+  defp value_type(value) when is_function(value), do: :function
+  defp value_type(value) when is_integer(value), do: :integer
+  defp value_type(value) when is_list(value), do: :list
+  defp value_type(value) when is_map(value), do: :map
+  defp value_type(value) when is_pid(value), do: :pid
+  defp value_type(value) when is_reference(value), do: :reference
+  defp value_type(value) when is_tuple(value), do: :tuple
+  defp value_type(_value), do: :other
 
   @spec body_to_binary(binary() | term()) :: binary()
   defp body_to_binary(body) when is_binary(body), do: body

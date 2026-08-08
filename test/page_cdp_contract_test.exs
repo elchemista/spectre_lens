@@ -297,7 +297,21 @@ defmodule SpectreLens.PageCDPContractTest do
     assert {:error, %SpectreLens.UnsupportedError{}} = CDP.pdf(tab, [])
 
     :ok = TestCDP.queue_reply(conn, "Page.captureScreenshot", {:ok, %{"data" => "not-base64"}})
-    assert {:error, _reason} = CDP.screenshot(tab, [])
+
+    assert {:error, {:invalid_browser_artifact_encoding, :screenshot}} =
+             CDP.screenshot(tab, [])
+
+    :ok = TestCDP.queue_reply(conn, "Page.printToPDF", {:ok, %{"data" => :invalid}})
+
+    assert {:error, {:invalid_browser_artifact_encoding, :pdf}} =
+             CDP.pdf(tab, [])
+
+    :ok = TestCDP.queue_reply(conn, "Runtime.evaluate", {:ok, %{"unexpected" => true}})
+
+    assert {:error,
+            %SpectreLens.ConnectionError{
+              reason: {:unexpected_evaluate_response, ["unexpected"]}
+            }} = CDP.evaluate(tab, "malformed()", [])
 
     :ok = TestCDP.queue_reply(conn, "DOM.pushNodesByBackendIdsToFrontend", {:ok, %{}})
 
@@ -306,6 +320,41 @@ defmodule SpectreLens.PageCDPContractTest do
 
     :ok = TestCDP.queue_reply(conn, "DOM.querySelector", {:error, -1, "DOM failure"})
     assert {:error, %SpectreLens.ElementNotFoundError{}} = CDP.click(tab, "#save", [])
+  end
+
+  test "projection options are forwarded and selector values stay data in generated scripts", %{
+    conn: conn,
+    tab: tab
+  } do
+    :ok = TestCDP.queue_reply(conn, "Runtime.evaluate", :ignore)
+
+    assert {:error, %SpectreLens.TimeoutError{timeout_ms: 0}} =
+             CDP.links(tab, timeout: 0)
+
+    :ok = TestCDP.queue_reply(conn, "Runtime.evaluate", :ignore)
+
+    assert {:error, %SpectreLens.TimeoutError{timeout_ms: 0}} =
+             CDP.forms(tab, timeout: 0)
+
+    selector = "#panel'); globalThis.__lens_pwned = true; ('"
+    assert :ok = CDP.scroll(tab, ref: selector, x: 1, y: 2)
+    assert {:ok, %PageMap{}} = CDP.focus(tab, selector, max_regions: 2)
+
+    expressions =
+      conn
+      |> TestCDP.commands()
+      |> Enum.filter(&(&1.method == "Runtime.evaluate"))
+      |> Enum.map(& &1.params.expression)
+
+    assert Enum.any?(expressions, fn expression ->
+             expression =~ "const selector = #{Jason.encode!(selector)};" and
+               expression =~ "document.querySelector(selector)"
+           end)
+
+    assert {:error, {:invalid_scroll_coordinate, :y, :down}} =
+             CDP.scroll(tab, y: :down)
+
+    assert {:error, {:invalid_max_regions, 0}} = CDP.page_map(tab, max_regions: 0)
   end
 
   test "failed target setup cleans every partially allocated resource", %{
@@ -398,6 +447,34 @@ defmodule SpectreLens.PageCDPContractTest do
     assert {:error, %SpectreLens.TimeoutError{operation: :wait_for_selector}} =
              Page.wait_for_selector(tab, "#missing", timeout: 0, interval: 0)
 
+    assert {:error, {:invalid_poll_interval, -1}} =
+             Page.wait_for_selector(tab, "#missing", timeout: 10, interval: -1)
+
+    assert {:error, {:invalid_timeout, :eventually}} =
+             Page.navigate(tab, "https://example.com", timeout: :eventually)
+
+    assert {:error, {:invalid_page_option, :content_timeout, :eventually}} =
+             Page.navigate(tab, "https://example.com", content_timeout: :eventually)
+
+    assert {:error, {:invalid_page_option, :content_interval, -1}} =
+             Page.navigate(tab, "https://example.com", content_interval: -1)
+
+    assert {:error, {:invalid_wait_for_content, :sometimes}} =
+             Page.navigate(tab, "https://example.com", wait_for_content?: :sometimes)
+
+    assert :sys.get_state(conn).waiters == %{}
+
+    called = make_ref()
+
+    assert {:error, {:invalid_timeout, -1}} =
+             Page.wait_for_navigation(
+               tab,
+               fn -> send(self(), called) end,
+               timeout: -1
+             )
+
+    refute_received ^called
+
     assert {:error, :action_failed} =
              Page.wait_for_navigation(
                tab,
@@ -451,6 +528,24 @@ defmodule SpectreLens.PageCDPContractTest do
 
     assert {:error, :missing_browser_context} =
              Page.session_snapshot(%{tab | browser_context_id: nil})
+  end
+
+  test "navigation content polling returns its last bounded state", %{conn: conn, tab: tab} do
+    for _index <- 1..20 do
+      :ok =
+        TestCDP.queue_reply(
+          conn,
+          "Runtime.evaluate",
+          {:ok, %{"result" => %{"value" => %{"usable" => false}}}}
+        )
+    end
+
+    assert {:error, {:empty_document_after_navigation, %{"usable" => false}}} =
+             Page.navigate(tab, "https://example.com/empty",
+               timeout: 100,
+               content_timeout: 2,
+               content_interval: 1
+             )
   end
 
   test "Page cleanup reports target errors before context errors", %{conn: conn, tab: tab} do

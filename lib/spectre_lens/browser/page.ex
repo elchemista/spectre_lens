@@ -97,17 +97,20 @@ defmodule SpectreLens.Page do
     timeout = opts[:timeout] || @navigation_timeout
 
     Telemetry.span([:spectre_lens, :page, :navigate], %{url: url, session_id: sid}, fn ->
-      wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
-
       result =
-        try do
-          with {:ok, _} <-
-                 Connection.send_command(conn, "Page.navigate", %{url: url}, timeout, sid),
-               {:ok, _} <- Connection.await_event(wait_ref, timeout) do
-            maybe_wait_for_usable_document(conn, sid, opts, timeout)
+        with :ok <- validate_timeout(timeout),
+             {:ok, content_wait} <- content_wait_options(opts, timeout) do
+          wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
+
+          try do
+            with {:ok, _} <-
+                   Connection.send_command(conn, "Page.navigate", %{url: url}, timeout, sid),
+                 {:ok, _} <- Connection.await_event(wait_ref, timeout) do
+              maybe_wait_for_usable_document(conn, sid, content_wait)
+            end
+          after
+            Connection.cancel_event_waiter(wait_ref)
           end
-        after
-          Connection.cancel_event_waiter(wait_ref)
         end
 
       span_result(result)
@@ -205,7 +208,8 @@ defmodule SpectreLens.Page do
   @spec page_map(Tab.t(), keyword()) :: {:ok, SpectreLens.PageMap.t()} | {:error, term()}
   def page_map(%Tab{} = tab, opts \\ []) do
     page_operation(tab, :page_map, %{}, fn ->
-      with {:ok, regions} <- evaluate(tab, layout_script(nil, opts), opts) do
+      with :ok <- validate_max_regions(opts),
+           {:ok, regions} <- evaluate(tab, layout_script(nil, opts), opts) do
         result = build_page_map(regions, opts)
         Telemetry.emit([:spectre_lens, :page, :step], %{}, page_step(tab, :page_map, result))
         {:ok, result}
@@ -223,55 +227,63 @@ defmodule SpectreLens.Page do
 
   @doc "Returns a simple link inventory via page JavaScript."
   @spec links(Tab.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def links(%Tab{} = tab, _opts \\ []) do
-    evaluate(tab, """
-    Array.from(document.querySelectorAll('a[href]')).map((a, index) => ({
-      index,
-      href: a.href,
-      text: (a.innerText || a.textContent || '').trim(),
-      title: a.getAttribute('title'),
-      id: a.id || null,
-      selector: a.id ? `#${CSS.escape(a.id)}` : null
-    }))
-    """)
+  def links(%Tab{} = tab, opts \\ []) do
+    evaluate(
+      tab,
+      """
+      Array.from(document.querySelectorAll('a[href]')).map((a, index) => ({
+        index,
+        href: a.href,
+        text: (a.innerText || a.textContent || '').trim(),
+        title: a.getAttribute('title'),
+        id: a.id || null,
+        selector: a.id ? `#${CSS.escape(a.id)}` : null
+      }))
+      """,
+      opts
+    )
   end
 
   @doc "Returns form structure via page JavaScript fallback."
   @spec forms(Tab.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
-  def forms(%Tab{} = tab, _opts \\ []) do
-    evaluate(tab, """
-    Array.from(document.forms).map((form, formIndex) => ({
-      index: formIndex,
-      id: form.id || null,
-      name: form.getAttribute('name'),
-      action: form.action || null,
-      method: (form.method || 'get').toLowerCase(),
-      selector: form.id ? `#${CSS.escape(form.id)}` : `form:nth-of-type(${formIndex + 1})`,
-      fields: Array.from(form.querySelectorAll('input, textarea, select, button'))
-        .filter((el) => (el.getAttribute('type') || '').toLowerCase() !== 'hidden')
-        .map((el, index) => ({
-        index,
-        tag: el.tagName.toLowerCase(),
-        type: el.getAttribute('type') || el.tagName.toLowerCase(),
-        name: el.getAttribute('name'),
-        id: el.id || null,
-        label: (
-          el.labels && el.labels[0] ? el.labels[0].innerText :
-          el.getAttribute('aria-label') ||
-          el.getAttribute('placeholder') ||
-          el.getAttribute('name') ||
-          el.id ||
-          ''
-        ).trim(),
-        required: !!el.required,
-        disabled: !!el.disabled,
-        selector: el.id ? `#${CSS.escape(el.id)}` : null,
-        options: el.tagName.toLowerCase() === 'select'
-          ? Array.from(el.options).map(o => ({text: o.text}))
-          : []
+  def forms(%Tab{} = tab, opts \\ []) do
+    evaluate(
+      tab,
+      """
+      Array.from(document.forms).map((form, formIndex) => ({
+        index: formIndex,
+        id: form.id || null,
+        name: form.getAttribute('name'),
+        action: form.action || null,
+        method: (form.method || 'get').toLowerCase(),
+        selector: form.id ? `#${CSS.escape(form.id)}` : `form:nth-of-type(${formIndex + 1})`,
+        fields: Array.from(form.querySelectorAll('input, textarea, select, button'))
+          .filter((el) => (el.getAttribute('type') || '').toLowerCase() !== 'hidden')
+          .map((el, index) => ({
+          index,
+          tag: el.tagName.toLowerCase(),
+          type: el.getAttribute('type') || el.tagName.toLowerCase(),
+          name: el.getAttribute('name'),
+          id: el.id || null,
+          label: (
+            el.labels && el.labels[0] ? el.labels[0].innerText :
+            el.getAttribute('aria-label') ||
+            el.getAttribute('placeholder') ||
+            el.getAttribute('name') ||
+            el.id ||
+            ''
+          ).trim(),
+          required: !!el.required,
+          disabled: !!el.disabled,
+          selector: el.id ? `#${CSS.escape(el.id)}` : null,
+          options: el.tagName.toLowerCase() === 'select'
+            ? Array.from(el.options).map(o => ({text: o.text}))
+            : []
+        }))
       }))
-    }))
-    """)
+      """,
+      opts
+    )
   end
 
   @doc "Captures a PNG screenshot."
@@ -284,7 +296,7 @@ defmodule SpectreLens.Page do
         |> maybe_put("captureBeyondViewport", opts[:capture_beyond_viewport])
 
       with {:ok, %{"data" => data}} <- command(tab, "Page.captureScreenshot", params, opts) do
-        Base.decode64(data)
+        decode_artifact(data, :screenshot)
       end
     end)
   end
@@ -302,7 +314,7 @@ defmodule SpectreLens.Page do
 
       case command(tab, "Page.printToPDF", params, opts) do
         {:ok, %{"data" => data}} ->
-          Base.decode64(data)
+          decode_artifact(data, :pdf)
 
         {:ok, other} ->
           {:error, SpectreLens.UnsupportedError.new(:pdf, {:unexpected_response, other})}
@@ -312,6 +324,17 @@ defmodule SpectreLens.Page do
       end
     end)
   end
+
+  @spec decode_artifact(term(), :pdf | :screenshot) :: {:ok, binary()} | {:error, term()}
+  defp decode_artifact(data, type) when is_binary(data) do
+    case Base.decode64(data) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, {:invalid_browser_artifact_encoding, type}}
+    end
+  end
+
+  defp decode_artifact(_data, type),
+    do: {:error, {:invalid_browser_artifact_encoding, type}}
 
   @doc "Clicks an element by selector, node id, or action ref."
   @spec click(Tab.t(), term(), keyword()) :: :ok | {:error, term()}
@@ -375,8 +398,12 @@ defmodule SpectreLens.Page do
     page_operation(tab, :wait_for_selector, %{target: selector}, fn ->
       timeout = opts[:timeout] || @default_timeout
       interval = opts[:interval] || 100
-      deadline = System.monotonic_time(:millisecond) + timeout
-      do_wait_for_selector(tab, selector, interval, deadline, timeout)
+
+      with :ok <- validate_timeout(timeout),
+           :ok <- validate_poll_interval(interval) do
+        deadline = System.monotonic_time(:millisecond) + timeout
+        do_wait_for_selector(tab, selector, interval, deadline, timeout)
+      end
     end)
   end
 
@@ -385,12 +412,15 @@ defmodule SpectreLens.Page do
   def wait_for_navigation(%Tab{conn: conn, session_id: sid} = tab, fun, opts \\ []) do
     page_operation(tab, :wait_for_navigation, %{}, fn ->
       timeout = opts[:timeout] || @navigation_timeout
-      wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
 
-      try do
-        await_after(fun, wait_ref, timeout)
-      after
-        Connection.cancel_event_waiter(wait_ref)
+      with :ok <- validate_timeout(timeout) do
+        wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
+
+        try do
+          await_after(fun, wait_ref, timeout)
+        after
+          Connection.cancel_event_waiter(wait_ref)
+        end
       end
     end)
   end
@@ -399,9 +429,10 @@ defmodule SpectreLens.Page do
   @spec scroll(Tab.t(), keyword()) :: :ok | {:error, term()}
   def scroll(%Tab{} = tab, opts \\ []) do
     page_operation(tab, :scroll, %{target: inspect(opts[:ref] || opts[:selector])}, fn ->
-      tab
-      |> evaluate(scroll_expression(opts))
-      |> ok_result()
+      with {:ok, expression} <- scroll_expression(opts),
+           {:ok, _result} <- evaluate(tab, expression) do
+        :ok
+      end
     end)
   end
 
@@ -675,7 +706,8 @@ defmodule SpectreLens.Page do
   @spec build_focused_map(Tab.t(), binary(), keyword()) ::
           {:ok, SpectreLens.PageMap.t()} | {:error, term()}
   defp build_focused_map(tab, selector, opts) do
-    with {:ok, regions} <- evaluate(tab, layout_script(selector, opts), opts) do
+    with :ok <- validate_max_regions(opts),
+         {:ok, regions} <- evaluate(tab, layout_script(selector, opts), opts) do
       result = build_page_map(regions, Keyword.put(opts, :focused?, true))
       Telemetry.emit([:spectre_lens, :page, :step], %{}, page_step(tab, :focus, result))
       {:ok, result}
@@ -722,17 +754,44 @@ defmodule SpectreLens.Page do
     end
   end
 
-  @spec maybe_wait_for_usable_document(pid(), binary(), keyword(), non_neg_integer()) ::
+  @spec maybe_wait_for_usable_document(
+          pid(),
+          binary(),
+          :skip | {non_neg_integer(), non_neg_integer()}
+        ) ::
           :ok | {:error, term()}
-  defp maybe_wait_for_usable_document(conn, sid, opts, timeout) do
-    if Keyword.get(opts, :wait_for_content?, true) do
-      interval = opts[:content_interval] || 100
-      deadline = System.monotonic_time(:millisecond) + (opts[:content_timeout] || timeout)
-      do_wait_for_usable_document(conn, sid, interval, deadline)
-    else
-      :ok
+  defp maybe_wait_for_usable_document(_conn, _sid, :skip), do: :ok
+
+  defp maybe_wait_for_usable_document(conn, sid, {timeout, interval}) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_usable_document(conn, sid, interval, deadline)
+  end
+
+  @spec content_wait_options(keyword(), non_neg_integer()) ::
+          {:ok, :skip | {non_neg_integer(), non_neg_integer()}} | {:error, term()}
+  defp content_wait_options(opts, fallback_timeout) do
+    opts
+    |> Keyword.get(:wait_for_content?, true)
+    |> normalize_content_wait(opts, fallback_timeout)
+  end
+
+  @spec normalize_content_wait(term(), keyword(), non_neg_integer()) ::
+          {:ok, :skip | {non_neg_integer(), non_neg_integer()}} | {:error, term()}
+  defp normalize_content_wait(true, opts, fallback_timeout) do
+    content_timeout = opts[:content_timeout] || fallback_timeout
+    content_interval = opts[:content_interval] || 100
+
+    with :ok <- validate_named_timeout(:content_timeout, content_timeout),
+         :ok <- validate_named_interval(:content_interval, content_interval) do
+      {:ok, {content_timeout, content_interval}}
     end
   end
+
+  defp normalize_content_wait(value, _opts, _fallback_timeout) when is_boolean(value),
+    do: {:ok, :skip}
+
+  defp normalize_content_wait(value, _opts, _fallback_timeout),
+    do: {:error, {:invalid_wait_for_content, value}}
 
   @spec do_wait_for_usable_document(pid(), binary(), non_neg_integer(), integer(), map() | nil) ::
           :ok | {:error, term()}
@@ -798,14 +857,25 @@ defmodule SpectreLens.Page do
     end
   end
 
-  @spec scroll_expression(keyword()) :: binary()
+  @spec scroll_expression(keyword()) :: {:ok, binary()} | {:error, term()}
   defp scroll_expression(opts) do
     x = opts[:x] || 0
     y = opts[:y] || opts[:by] || 0
 
-    case opts[:ref] || opts[:selector] do
-      nil -> window_scroll_expression(x, y)
-      ref -> element_scroll_expression(selector_for(ref), x, y)
+    with :ok <- validate_scroll_coordinate(:x, x),
+         :ok <- validate_scroll_coordinate(:y, y) do
+      scroll_target_expression(opts[:ref] || opts[:selector], x, y)
+    end
+  end
+
+  @spec scroll_target_expression(term(), number(), number()) ::
+          {:ok, binary()} | {:error, term()}
+  defp scroll_target_expression(nil, x, y), do: {:ok, window_scroll_expression(x, y)}
+
+  defp scroll_target_expression(ref, x, y) do
+    case selector_for(ref) do
+      selector when is_binary(selector) -> {:ok, element_scroll_expression(selector, x, y)}
+      nil -> {:error, SpectreLens.ElementNotFoundError.new(ref)}
     end
   end
 
@@ -814,21 +884,24 @@ defmodule SpectreLens.Page do
     "window.scrollBy(#{Jason.encode!(x)}, #{Jason.encode!(y)}); true"
   end
 
-  @spec element_scroll_expression(binary() | nil, number(), number()) :: binary()
+  @spec element_scroll_expression(binary(), number(), number()) :: binary()
   defp element_scroll_expression(selector, x, y) do
     """
     (() => {
-      const el = document.querySelector(#{Jason.encode!(selector)});
-      if (!el) throw new Error('Element not found: #{selector}');
+      const selector = #{Jason.encode!(selector)};
+      const el = document.querySelector(selector);
+      if (!el) throw new Error(`Element not found: ${selector}`);
       el.scrollBy(#{Jason.encode!(x)}, #{Jason.encode!(y)});
       return true;
     })()
     """
   end
 
-  @spec ok_result({:ok, term()} | {:error, term()}) :: :ok | {:error, term()}
-  defp ok_result({:ok, _}), do: :ok
-  defp ok_result({:error, _} = error), do: error
+  @spec validate_scroll_coordinate(:x | :y, term()) :: :ok | {:error, term()}
+  defp validate_scroll_coordinate(_axis, value) when is_number(value), do: :ok
+
+  defp validate_scroll_coordinate(axis, value),
+    do: {:error, {:invalid_scroll_coordinate, axis, value}}
 
   @spec span_result(term()) :: term() | {term(), map()}
   defp span_result(:ok), do: :ok
@@ -920,15 +993,18 @@ defmodule SpectreLens.Page do
   @spec reload(Tab.t(), keyword()) :: :ok | {:error, term()}
   defp reload(%Tab{conn: conn, session_id: sid}, opts) do
     timeout = opts[:timeout] || @navigation_timeout
-    wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
 
-    try do
-      with {:ok, _} <- Connection.send_command(conn, "Page.reload", %{}, timeout, sid),
-           {:ok, _} <- Connection.await_event(wait_ref, timeout) do
-        :ok
+    with :ok <- validate_timeout(timeout) do
+      wait_ref = Connection.register_event_waiter(conn, "Page.loadEventFired", sid)
+
+      try do
+        with {:ok, _} <- Connection.send_command(conn, "Page.reload", %{}, timeout, sid),
+             {:ok, _} <- Connection.await_event(wait_ref, timeout) do
+          :ok
+        end
+      after
+        Connection.cancel_event_waiter(wait_ref)
       end
-    after
-      Connection.cancel_event_waiter(wait_ref)
     end
   end
 
@@ -1107,19 +1183,53 @@ defmodule SpectreLens.Page do
   @spec do_wait_for_selector(Tab.t(), binary(), non_neg_integer(), integer(), non_neg_integer()) ::
           :ok | {:error, term()}
   defp do_wait_for_selector(tab, selector, interval, deadline, timeout) do
-    if System.monotonic_time(:millisecond) > deadline do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
       {:error, SpectreLens.TimeoutError.new(operation: :wait_for_selector, timeout_ms: timeout)}
     else
-      case node_id(tab, selector, 1_000) do
-        {:ok, _} ->
-          :ok
-
-        {:error, _} ->
-          Process.sleep(interval)
-          do_wait_for_selector(tab, selector, interval, deadline, timeout)
-      end
+      poll_selector(tab, selector, interval, deadline, timeout, remaining)
     end
   end
+
+  @spec poll_selector(
+          Tab.t(),
+          binary(),
+          non_neg_integer(),
+          integer(),
+          non_neg_integer(),
+          integer()
+        ) ::
+          :ok | {:error, term()}
+  defp poll_selector(tab, selector, interval, deadline, timeout, remaining) do
+    case node_id(tab, selector, min(remaining, 1_000)) do
+      {:ok, _} ->
+        :ok
+
+      {:error, _} ->
+        sleep = min(interval, max(deadline - System.monotonic_time(:millisecond), 0))
+        if sleep > 0, do: Process.sleep(sleep)
+        do_wait_for_selector(tab, selector, interval, deadline, timeout)
+    end
+  end
+
+  @spec validate_timeout(term()) :: :ok | {:error, term()}
+  defp validate_timeout(timeout) when is_integer(timeout) and timeout >= 0, do: :ok
+  defp validate_timeout(timeout), do: {:error, {:invalid_timeout, timeout}}
+
+  @spec validate_poll_interval(term()) :: :ok | {:error, term()}
+  defp validate_poll_interval(interval) when is_integer(interval) and interval >= 0, do: :ok
+  defp validate_poll_interval(interval), do: {:error, {:invalid_poll_interval, interval}}
+
+  @spec validate_named_timeout(atom(), term()) :: :ok | {:error, term()}
+  defp validate_named_timeout(_key, timeout) when is_integer(timeout) and timeout >= 0, do: :ok
+  defp validate_named_timeout(key, timeout), do: {:error, {:invalid_page_option, key, timeout}}
+
+  @spec validate_named_interval(atom(), term()) :: :ok | {:error, term()}
+  defp validate_named_interval(_key, interval) when is_integer(interval) and interval >= 0,
+    do: :ok
+
+  defp validate_named_interval(key, interval), do: {:error, {:invalid_page_option, key, interval}}
 
   @spec parse_evaluate_result(map()) :: {:ok, term()} | {:error, SpectreLens.JavaScriptError.t()}
   defp parse_evaluate_result(%{
@@ -1135,6 +1245,10 @@ defmodule SpectreLens.Page do
   defp parse_evaluate_result(%{"result" => %{"type" => "undefined"}}), do: {:ok, nil}
   defp parse_evaluate_result(%{"result" => %{"value" => value}}), do: {:ok, value}
   defp parse_evaluate_result(%{"result" => result}), do: {:ok, result["value"]}
+
+  defp parse_evaluate_result(result) do
+    {:error, SpectreLens.ConnectionError.new({:unexpected_evaluate_response, Map.keys(result)})}
+  end
 
   @spec accessibility_text([map()]) :: binary()
   defp accessibility_text(nodes) do
@@ -1308,13 +1422,11 @@ defmodule SpectreLens.Page do
   defp layout_script(selector, opts) do
     max_regions = opts[:max_regions] || 18
 
-    scope =
-      if selector, do: "document.querySelector(#{Jason.encode!(selector)})", else: "document.body"
-
     """
     (() => {
-      const scope = #{scope};
-      if (!scope) throw new Error('Scope not found: #{selector || "document.body"}');
+      const selector = #{Jason.encode!(selector)};
+      const scope = selector === null ? document.body : document.querySelector(selector);
+      if (!scope) throw new Error(`Scope not found: ${selector || 'document.body'}`);
       const maxRegions = #{Jason.encode!(max_regions)};
       const query = [
         'header', 'nav', 'main', 'aside', 'footer', 'section', 'article', 'form',
@@ -1444,6 +1556,14 @@ defmodule SpectreLens.Page do
         });
     })()
     """
+  end
+
+  @spec validate_max_regions(keyword()) :: :ok | {:error, term()}
+  defp validate_max_regions(opts) do
+    case Keyword.get(opts, :max_regions, 18) do
+      max_regions when is_integer(max_regions) and max_regions > 0 -> :ok
+      max_regions -> {:error, {:invalid_max_regions, max_regions}}
+    end
   end
 
   @spec build_page_map(term(), keyword()) :: SpectreLens.PageMap.t()

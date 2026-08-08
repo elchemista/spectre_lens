@@ -26,6 +26,7 @@ defmodule SpectreLens.Telemetry do
 
   @point_events [
     [:spectre_lens, :cdp, :decode_error],
+    [:spectre_lens, :cdp, :encode_error],
     [:spectre_lens, :page, :step],
     [:spectre_lens, :runtime, :tab_released],
     [:spectre_lens, :lightpanda, :download_fallback],

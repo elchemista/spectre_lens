@@ -16,7 +16,6 @@ defmodule SpectreLens.MixProject do
       deps: deps(),
       aliases: aliases(),
       description: description(),
-      package: package(),
       dialyzer: dialyzer(),
       docs: docs(),
       source_url: @source_url,
@@ -35,7 +34,7 @@ defmodule SpectreLens.MixProject do
 
   defp deps do
     [
-      {:spectre, github: "elchemista/spectre", branch: "main", only: :test},
+      {:spectre, github: "elchemista/spectre", tag: "0.2.0", only: :test},
       {:jason, "~> 1.4.5"},
       {:req, "~> 0.7.1"},
       {:websockex, "~> 0.5.1"},
@@ -55,25 +54,6 @@ defmodule SpectreLens.MixProject do
 
   defp description do
     "Agent-first, backend-neutral browser perception for Elixir."
-  end
-
-  defp package do
-    [
-      name: "spectre_lens",
-      maintainers: ["Elchemista"],
-      files: ~w(
-        lib
-        docs
-        mix.exs
-        README.md
-        CHANGELOG.md
-        LICENSE
-      ),
-      licenses: ["Apache-2.0"],
-      links: %{
-        "GitHub" => @source_url
-      }
-    ]
   end
 
   defp docs do
