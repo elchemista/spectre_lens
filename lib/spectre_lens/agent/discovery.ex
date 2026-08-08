@@ -42,9 +42,10 @@ defmodule SpectreLens.Discovery do
   @spec run(Tab.t(), keyword()) :: {:ok, t()} | {:error, term()}
   def run(%Tab{} = tab, opts) do
     with {:ok, goal} <- fetch_goal(opts),
+         :ok <- validate_options(opts),
+         {:ok, {scorer, scorer_opts}} <- scorer(opts),
          {:ok, root_url} <- SpectreLens.Protocol.url(tab) do
       root_url = canonical_url(root_url) || root_url
-      {scorer, scorer_opts} = scorer(opts)
 
       state = %State{
         tab: tab,
@@ -113,10 +114,10 @@ defmodule SpectreLens.Discovery do
         | current_url: url,
           visited: [page | state.visited],
           visited_count: state.visited_count + 1,
-          forms: forms ++ state.forms,
-          candidates: kept_candidates ++ state.candidates,
-          warnings: cap_warnings ++ warnings ++ state.warnings,
-          errors: errors ++ state.errors
+          forms: Enum.reverse(forms, state.forms),
+          candidates: Enum.reverse(kept_candidates, state.candidates),
+          warnings: Enum.reverse(warnings, Enum.reverse(cap_warnings, state.warnings)),
+          errors: Enum.reverse(errors, state.errors)
       }
       |> enqueue_candidates(kept_candidates, depth + 1)
     else
@@ -495,11 +496,69 @@ defmodule SpectreLens.Discovery do
     |> Base.encode16(case: :lower)
   end
 
-  @spec scorer(keyword()) :: {module(), keyword()}
+  @spec scorer(keyword()) :: {:ok, {module(), keyword()}} | {:error, term()}
   defp scorer(opts) do
-    case Keyword.get(opts, :scorer, SpectreLens.Discovery.DeterministicScorer) do
-      {module, scorer_opts} -> {module, List.wrap(scorer_opts)}
-      module -> {module, []}
+    configured = Keyword.get(opts, :scorer, SpectreLens.Discovery.DeterministicScorer)
+
+    {module, scorer_opts} =
+      case configured do
+        {module, scorer_opts} -> {module, scorer_opts}
+        module -> {module, []}
+      end
+
+    cond do
+      not Keyword.keyword?(scorer_opts) ->
+        {:error, {:invalid_discovery_scorer_options, scorer_opts}}
+
+      not (is_atom(module) and Code.ensure_loaded?(module)) ->
+        {:error, {:invalid_discovery_scorer, configured}}
+
+      not function_exported?(module, :score_candidate, 3) or
+          not function_exported?(module, :rank_candidates, 3) ->
+        {:error, {:invalid_discovery_scorer, module}}
+
+      true ->
+        {:ok, {module, scorer_opts}}
+    end
+  end
+
+  @spec validate_options(keyword()) :: :ok | {:error, term()}
+  defp validate_options(opts) do
+    with :ok <- validate_non_negative_option(opts, :max_depth, @default_max_depth),
+         :ok <- validate_positive_option(opts, :max_pages, @default_max_pages),
+         :ok <-
+           validate_non_negative_option(
+             opts,
+             :max_links_per_page,
+             @default_max_links_per_page
+           ),
+         :ok <- validate_non_negative_option(opts, :max_candidates, @default_max_candidates) do
+      validate_boolean_option(opts, :same_origin?, true)
+    end
+  end
+
+  @spec validate_non_negative_option(keyword(), atom(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  defp validate_non_negative_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value >= 0 -> :ok
+      value -> {:error, {:invalid_discovery_option, key, value}}
+    end
+  end
+
+  @spec validate_positive_option(keyword(), atom(), pos_integer()) :: :ok | {:error, term()}
+  defp validate_positive_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value > 0 -> :ok
+      value -> {:error, {:invalid_discovery_option, key, value}}
+    end
+  end
+
+  @spec validate_boolean_option(keyword(), atom(), boolean()) :: :ok | {:error, term()}
+  defp validate_boolean_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_boolean(value) -> :ok
+      value -> {:error, {:invalid_discovery_option, key, value}}
     end
   end
 

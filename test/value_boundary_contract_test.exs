@@ -230,6 +230,23 @@ defmodule SpectreLens.ValueBoundaryContractTest do
     assert {:error, {:unsupported_session_version, 2}} = Session.normalize(%{version: 2})
   end
 
+  test "session snapshots recursively normalize runtime-only values for JSON checkpoints" do
+    session =
+      Session.new(
+        cookies: [%{{:compound, :key} => self(), nested: %{ref: make_ref()}}],
+        local_storage: %{{:origin, 1} => %{{:setting, 1} => self()}},
+        metadata: %{owner: self(), nested: [make_ref(), %{worker: self()}]}
+      )
+
+    encoded = session |> Session.to_map() |> Jason.encode!()
+
+    assert is_binary(encoded)
+    assert session.cookies |> hd() |> Map.fetch!("{:compound, :key}") |> is_binary()
+    assert session.local_storage["{:origin, 1}"]["{:setting, 1}"] |> is_binary()
+    assert is_binary(session.metadata["owner"])
+    assert is_list(session.metadata["nested"])
+  end
+
   test "the Spectre extension compiles explicit and default immutable configuration" do
     assert Extension.id() == :lens
     assert Extension.api_version() == 1

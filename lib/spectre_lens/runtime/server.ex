@@ -14,6 +14,8 @@ defmodule SpectreLens.Runtime do
   alias SpectreLens.{Protocol, Session, Tab, TabRef}
   alias SpectreLens.Telemetry
 
+  @pending_shutdown_timeout 5_000
+
   defstruct [:pid]
 
   @type t :: %__MODULE__{pid: pid()}
@@ -42,10 +44,14 @@ defmodule SpectreLens.Runtime do
   def new_tab(%__MODULE__{pid: pid}, opts), do: new_tab(pid, opts)
 
   def new_tab(pid, opts) when is_pid(pid) do
-    Telemetry.span([:spectre_lens, :runtime, :new_tab], %{runtime: inspect(pid)}, fn ->
-      result = GenServer.call(pid, {:new_tab, opts}, :infinity)
-      {result, %{result: result}}
-    end)
+    if Keyword.keyword?(opts) do
+      Telemetry.span([:spectre_lens, :runtime, :new_tab], %{runtime: inspect(pid)}, fn ->
+        result = GenServer.call(pid, {:new_tab, opts}, :infinity)
+        {result, %{result: result}}
+      end)
+    else
+      {:error, {:invalid_new_tab_options, opts}}
+    end
   end
 
   @doc """
@@ -167,14 +173,18 @@ defmodule SpectreLens.Runtime do
 
   @impl GenServer
   def handle_call({:new_tab, opts}, from, state) do
-    opts = Keyword.merge(state.url_policy, opts)
+    if Keyword.keyword?(opts) do
+      opts = Keyword.merge(state.url_policy, opts)
 
-    with {:ok, opts} <- prepare_session_opts(state.session_table, opts),
-         {:ok, instance} <- available_instance(state, opts) do
-      {:noreply, start_tab_worker(state, from, instance, opts)}
+      with {:ok, opts} <- prepare_session_opts(state.session_table, opts),
+           {:ok, instance} <- available_instance(state, opts) do
+        {:noreply, start_tab_worker(state, from, instance, opts)}
+      else
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
     else
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+      {:reply, {:error, {:invalid_new_tab_options, opts}}, state}
     end
   end
 
@@ -813,8 +823,12 @@ defmodule SpectreLens.Runtime do
 
   @spec shutdown_pending_workers(map()) :: :ok
   defp shutdown_pending_workers(pending_tabs) do
+    deadline = System.monotonic_time(:millisecond) + @pending_shutdown_timeout
+
     Enum.each(pending_tabs, fn {_ref, pending} ->
-      case Task.shutdown(pending.task, 5_000) do
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      case Task.shutdown(pending.task, remaining) do
         {:ok, {:ok, tab}} -> close_setup_tab(tab)
         _ -> :ok
       end

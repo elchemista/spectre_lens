@@ -20,17 +20,35 @@ defmodule SpectreLens.CDP.Connection do
   `endpoint` may be the HTTP server base URL (`http://127.0.0.1:9222`) or a
   direct WebSocket URL.
   """
-  @spec open(endpoint()) :: {:ok, pid()} | {:error, Exception.t()}
-  def open("ws://" <> _ = ws_url), do: WebSockex.start_link(ws_url, __MODULE__, initial_state())
-  def open("wss://" <> _ = ws_url), do: WebSockex.start_link(ws_url, __MODULE__, initial_state())
+  @spec open(term()) :: {:ok, pid()} | {:error, Exception.t()}
+  def open(endpoint) do
+    with {:ok, endpoint_kind} <- validate_endpoint(endpoint) do
+      open_endpoint(endpoint_kind, endpoint)
+    end
+  end
 
-  def open(endpoint) when is_binary(endpoint) do
-    version_url = String.trim_trailing(endpoint, "/") <> "/json/version"
+  @spec open_endpoint(:http | :websocket, endpoint()) ::
+          {:ok, pid()} | {:error, Exception.t()}
+  defp open_endpoint(:websocket, endpoint) do
+    WebSockex.start_link(endpoint, __MODULE__, initial_state())
+  rescue
+    exception -> {:error, SpectreLens.ConnectionError.new(exception)}
+  catch
+    kind, reason -> {:error, SpectreLens.ConnectionError.new({kind, reason})}
+  end
+
+  defp open_endpoint(:http, endpoint) do
+    version_url = version_url(endpoint)
 
     case Req.get(version_url, retry: false) do
       {:ok, %{status: status, body: %{"webSocketDebuggerUrl" => ws_url}}}
-      when status in 200..299 ->
+      when status in 200..299 and is_binary(ws_url) ->
         open(ws_url)
+
+      {:ok, %{status: status, body: %{"webSocketDebuggerUrl" => ws_url}}}
+      when status in 200..299 ->
+        {:error,
+         SpectreLens.ConnectionError.new({:invalid_websocket_endpoint, value_type(ws_url)})}
 
       {:ok, %{status: status, body: body}} ->
         {:error, SpectreLens.ConnectionError.new({:unexpected_version_response, status, body})}
@@ -38,6 +56,50 @@ defmodule SpectreLens.CDP.Connection do
       {:error, reason} ->
         {:error, SpectreLens.ConnectionError.new(reason)}
     end
+  rescue
+    exception -> {:error, SpectreLens.ConnectionError.new(exception)}
+  catch
+    kind, reason -> {:error, SpectreLens.ConnectionError.new({kind, reason})}
+  end
+
+  @spec validate_endpoint(term()) ::
+          {:ok, :http | :websocket} | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_endpoint(endpoint) when is_binary(endpoint) and endpoint != "" do
+    endpoint |> URI.parse() |> validate_endpoint_uri()
+  rescue
+    _exception -> invalid_endpoint(:invalid_cdp_endpoint)
+  end
+
+  defp validate_endpoint(endpoint),
+    do: invalid_endpoint({:invalid_cdp_endpoint_type, value_type(endpoint)})
+
+  @spec validate_endpoint_uri(URI.t()) ::
+          {:ok, :http | :websocket} | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_endpoint_uri(%URI{scheme: scheme, host: host})
+       when scheme in ["ws", "wss"] and is_binary(host) and host != "",
+       do: {:ok, :websocket}
+
+  defp validate_endpoint_uri(%URI{scheme: scheme, host: host})
+       when scheme in ["http", "https"] and is_binary(host) and host != "",
+       do: {:ok, :http}
+
+  defp validate_endpoint_uri(%URI{scheme: scheme})
+       when scheme in ["http", "https", "ws", "wss"],
+       do: invalid_endpoint(:invalid_cdp_endpoint)
+
+  defp validate_endpoint_uri(%URI{scheme: scheme}) when is_binary(scheme),
+    do: invalid_endpoint({:unsupported_cdp_endpoint_scheme, scheme})
+
+  defp validate_endpoint_uri(_invalid), do: invalid_endpoint(:invalid_cdp_endpoint)
+
+  @spec invalid_endpoint(term()) :: {:error, SpectreLens.ConnectionError.t()}
+  defp invalid_endpoint(reason), do: {:error, SpectreLens.ConnectionError.new(reason)}
+
+  @spec version_url(endpoint()) :: endpoint()
+  defp version_url(endpoint) do
+    uri = URI.parse(endpoint)
+    path = String.trim_trailing(uri.path || "", "/") <> "/json/version"
+    URI.to_string(%{uri | path: path, fragment: nil})
   end
 
   @doc "Closes a CDP connection process."
@@ -61,28 +123,95 @@ defmodule SpectreLens.CDP.Connection do
     metadata = %{method: method, session_id: session_id}
 
     Telemetry.span([:spectre_lens, :cdp, :command], metadata, fn ->
-      ref = make_ref()
-      WebSockex.cast(pid, {:send_command, method, params, session_id, self(), ref})
-
       result =
-        receive do
-          {:spectre_lens_cdp_response, ^ref, result} ->
-            {:ok, result}
-
-          {:spectre_lens_cdp_error, ^ref, %{"code" => code, "message" => message}} ->
-            {:error, SpectreLens.CDPError.new(code, message, method)}
-
-          {:spectre_lens_cdp_error, ^ref, error} ->
-            {:error, SpectreLens.CDPError.new(0, inspect(error), method)}
-        after
-          timeout ->
-            WebSockex.cast(pid, {:cancel_command, self(), ref})
-            {:error, SpectreLens.TimeoutError.new(operation: method, timeout_ms: timeout)}
+        with :ok <- validate_command(pid, method, params, timeout, session_id) do
+          send_valid_command(pid, method, params, timeout, session_id)
         end
 
       {result, %{result: result}}
     end)
   end
+
+  @spec send_valid_command(pid(), binary(), map(), non_neg_integer(), binary() | nil) ::
+          {:ok, map()} | {:error, Exception.t()}
+  defp send_valid_command(pid, method, params, timeout, session_id) do
+    ref = make_ref()
+    monitor = Process.monitor(pid)
+    WebSockex.cast(pid, {:send_command, method, params, session_id, self(), ref})
+
+    result =
+      receive do
+        {:spectre_lens_cdp_response, ^ref, response} ->
+          {:ok, response}
+
+        {:spectre_lens_cdp_error, ^ref, %{"code" => code, "message" => message}} ->
+          {:error, SpectreLens.CDPError.new(code, message, method)}
+
+        {:spectre_lens_cdp_error, ^ref, error} ->
+          {:error, SpectreLens.CDPError.new(0, inspect(error), method)}
+
+        {:DOWN, ^monitor, :process, ^pid, reason} ->
+          {:error, SpectreLens.ConnectionError.new({:connection_down, reason})}
+      after
+        timeout ->
+          WebSockex.cast(pid, {:cancel_command, self(), ref})
+          {:error, SpectreLens.TimeoutError.new(operation: method, timeout_ms: timeout)}
+      end
+
+    Process.demonitor(monitor, [:flush])
+    result
+  end
+
+  @spec validate_command(term(), term(), term(), term(), term()) ::
+          :ok | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_command(pid, method, params, timeout, session_id) do
+    with :ok <- validate_connection(pid),
+         :ok <- validate_method(method),
+         :ok <- validate_params(params),
+         :ok <- validate_command_timeout(timeout) do
+      validate_session_id(session_id)
+    end
+  end
+
+  @spec validate_connection(term()) :: :ok | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_connection(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: :ok, else: invalid_command(:cdp_connection_closed)
+  end
+
+  defp validate_connection(pid), do: invalid_command({:invalid_cdp_connection, pid})
+
+  @spec validate_method(term()) :: :ok | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_method(method) when is_binary(method) and method != "", do: :ok
+  defp validate_method(method), do: invalid_command({:invalid_cdp_method, method})
+
+  @spec validate_params(term()) :: :ok | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_params(params) when is_map(params), do: :ok
+  defp validate_params(params), do: invalid_command({:invalid_cdp_params, value_type(params)})
+
+  @spec validate_command_timeout(term()) :: :ok | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_command_timeout(timeout) when is_integer(timeout) and timeout >= 0, do: :ok
+  defp validate_command_timeout(timeout), do: invalid_command({:invalid_cdp_timeout, timeout})
+
+  @spec validate_session_id(term()) :: :ok | {:error, SpectreLens.ConnectionError.t()}
+  defp validate_session_id(session_id) when is_nil(session_id) or is_binary(session_id), do: :ok
+
+  defp validate_session_id(session_id),
+    do: invalid_command({:invalid_cdp_session_id, value_type(session_id)})
+
+  @spec invalid_command(term()) :: {:error, SpectreLens.ConnectionError.t()}
+  defp invalid_command(reason), do: {:error, SpectreLens.ConnectionError.new(reason)}
+
+  @spec value_type(term()) :: atom()
+  defp value_type(value) when is_atom(value), do: :atom
+  defp value_type(value) when is_binary(value), do: :binary
+  defp value_type(value) when is_function(value), do: :function
+  defp value_type(value) when is_integer(value), do: :integer
+  defp value_type(value) when is_list(value), do: :list
+  defp value_type(value) when is_map(value), do: :map
+  defp value_type(value) when is_pid(value), do: :pid
+  defp value_type(value) when is_reference(value), do: :reference
+  defp value_type(value) when is_tuple(value), do: :tuple
+  defp value_type(_value), do: :other
 
   @doc """
   Registers a one-shot waiter for a CDP event.
@@ -101,7 +230,16 @@ defmodule SpectreLens.CDP.Connection do
           {:ok, map()} | {:error, Exception.t()}
   def await_event(waiter, timeout \\ 15_000)
 
-  def await_event({pid, ref}, timeout) do
+  def await_event({pid, ref}, timeout)
+      when is_pid(pid) and is_reference(ref) and is_integer(timeout) and timeout >= 0 do
+    monitor = Process.monitor(pid)
+    result = await_registered_event(pid, ref, monitor, timeout)
+    Process.demonitor(monitor, [:flush])
+    result
+  end
+
+  def await_event(ref, timeout)
+      when is_reference(ref) and is_integer(timeout) and timeout >= 0 do
     receive do
       {:spectre_lens_cdp_event, ^ref, params} ->
         {:ok, params}
@@ -110,20 +248,31 @@ defmodule SpectreLens.CDP.Connection do
         {:error, SpectreLens.ConnectionError.new(reason)}
     after
       timeout ->
-        WebSockex.cast(pid, {:cancel_event_waiter, self(), ref})
         {:error, SpectreLens.TimeoutError.new(operation: :await_event, timeout_ms: timeout)}
     end
   end
 
-  def await_event(ref, timeout) when is_reference(ref) do
+  def await_event(_waiter, timeout) when not (is_integer(timeout) and timeout >= 0),
+    do: invalid_command({:invalid_cdp_timeout, timeout})
+
+  def await_event(waiter, _timeout),
+    do: invalid_command({:invalid_cdp_event_waiter, value_type(waiter)})
+
+  @spec await_registered_event(pid(), reference(), reference(), non_neg_integer()) ::
+          {:ok, map()} | {:error, Exception.t()}
+  defp await_registered_event(pid, ref, monitor, timeout) do
     receive do
       {:spectre_lens_cdp_event, ^ref, params} ->
         {:ok, params}
 
       {:spectre_lens_cdp_event_error, ^ref, reason} ->
         {:error, SpectreLens.ConnectionError.new(reason)}
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:error, SpectreLens.ConnectionError.new({:connection_down, reason})}
     after
       timeout ->
+        cancel_event_waiter({pid, ref})
         {:error, SpectreLens.TimeoutError.new(operation: :await_event, timeout_ms: timeout)}
     end
   end
@@ -141,9 +290,11 @@ defmodule SpectreLens.CDP.Connection do
   @spec wait_for_event(pid(), binary(), non_neg_integer(), binary() | nil) ::
           {:ok, map()} | {:error, Exception.t()}
   def wait_for_event(pid, method, timeout \\ 15_000, session_id \\ nil) do
-    pid
-    |> register_event_waiter(method, session_id)
-    |> await_event(timeout)
+    with :ok <- validate_command(pid, method, %{}, timeout, session_id) do
+      pid
+      |> register_event_waiter(method, session_id)
+      |> await_event(timeout)
+    end
   end
 
   @doc "Subscribes a process to every matching CDP event until it unsubscribes or exits."
@@ -163,21 +314,29 @@ defmodule SpectreLens.CDP.Connection do
   @impl WebSockex
   def handle_cast({:send_command, method, params, session_id, from, ref}, state) do
     id = state.id
-    monitor = Process.monitor(from)
 
-    message =
+    payload =
       %{id: id, method: method, params: params}
       |> maybe_put(:sessionId, session_id)
-      |> Jason.encode!()
 
-    pending =
-      Map.put(state.pending, id, %{from: from, ref: ref, method: method, monitor: monitor})
+    case Jason.encode(payload) do
+      {:ok, message} ->
+        monitor = Process.monitor(from)
 
-    pending_refs = Map.put(state.pending_refs, {from, ref}, id)
-    monitors = Map.put(state.monitors, monitor, {:pending, id})
+        pending =
+          Map.put(state.pending, id, %{from: from, ref: ref, method: method, monitor: monitor})
 
-    {:reply, {:text, message},
-     %{state | id: id + 1, pending: pending, pending_refs: pending_refs, monitors: monitors}}
+        pending_refs = Map.put(state.pending_refs, {from, ref}, id)
+        monitors = Map.put(state.monitors, monitor, {:pending, id})
+
+        {:reply, {:text, message},
+         %{state | id: id + 1, pending: pending, pending_refs: pending_refs, monitors: monitors}}
+
+      {:error, _reason} ->
+        Telemetry.emit([:spectre_lens, :cdp, :encode_error], %{}, %{method: method})
+        send(from, {:spectre_lens_cdp_error, ref, invalid_command_payload()})
+        {:ok, state}
+    end
   end
 
   def handle_cast({:cancel_command, from, ref}, state) do
@@ -484,6 +643,11 @@ defmodule SpectreLens.CDP.Connection do
   @spec connection_closed(term()) :: map()
   defp connection_closed(reason) do
     %{"code" => -32_000, "message" => "CDP connection closed: #{inspect(reason)}"}
+  end
+
+  @spec invalid_command_payload() :: map()
+  defp invalid_command_payload do
+    %{"code" => -32_602, "message" => "CDP command parameters are not JSON encodable"}
   end
 
   @spec maybe_put(map(), atom(), nil | term()) :: map()

@@ -1075,6 +1075,25 @@ defmodule SpectreLensTest do
       assert [%{source_url: ^root, depth: 0} | _] = discovery.forms
     end
 
+    test "preserves form order within each visited page", %{root: root} do
+      pages =
+        Process.get(:discovery_pages)
+        |> update_in([root, "forms"], fn _forms ->
+          [
+            %{name: "first", selector: "#first"},
+            %{name: "second", selector: "#second"}
+          ]
+        end)
+
+      Process.put(:discovery_pages, pages)
+      tab = %Tab{protocol: DiscoveryProtocol, url_policy: [network_policy: :any]}
+
+      assert {:ok, discovery} =
+               SpectreLens.discover(tab, goal: "api", max_depth: 0, max_pages: 1)
+
+      assert Enum.map(discovery.forms, & &1.name) == ["first", "second"]
+    end
+
     test "caps large link sets and records truncation warnings", %{root: root} do
       links =
         for index <- 1..100 do
@@ -1136,6 +1155,34 @@ defmodule SpectreLensTest do
     test "deterministic scorer can skip invalid candidates" do
       assert {:skip, :missing_url} =
                DeterministicScorer.score_candidate(%Candidate{}, %{goal: "api"}, [])
+    end
+
+    test "rejects invalid crawl bounds and scorer contracts", %{root: _root} do
+      tab = %Tab{protocol: DiscoveryProtocol, url_policy: [network_policy: :any]}
+
+      assert {:error, {:invalid_discovery_option, :max_pages, 0}} =
+               SpectreLens.discover(tab, goal: "api", max_pages: 0)
+
+      assert {:error, {:invalid_discovery_option, :max_depth, -1}} =
+               SpectreLens.discover(tab, goal: "api", max_depth: -1)
+
+      assert {:error, {:invalid_discovery_option, :max_links_per_page, -1}} =
+               SpectreLens.discover(tab, goal: "api", max_links_per_page: -1)
+
+      assert {:error, {:invalid_discovery_option, :same_origin?, nil}} =
+               SpectreLens.discover(tab, goal: "api", same_origin?: nil)
+
+      assert {:error, {:invalid_discovery_option, :max_candidates, -1}} =
+               SpectreLens.discover(tab, goal: "api", max_candidates: -1)
+
+      assert {:error, {:invalid_discovery_scorer, String}} =
+               SpectreLens.discover(tab, goal: "api", scorer: String)
+
+      assert {:error, {:invalid_discovery_scorer_options, %{weight: 1}}} =
+               SpectreLens.discover(tab,
+                 goal: "api",
+                 scorer: {DeterministicScorer, %{weight: 1}}
+               )
     end
   end
 
@@ -1283,6 +1330,47 @@ defmodule SpectreLensTest do
                )
     end
 
+    test "contains malformed custom fetchers and header adapters" do
+      url = "https://example.com/llms.txt"
+      opts = [network_policy: :any]
+
+      assert {:error, {:llms_txt_not_found, {:invalid_llms_fetcher, :atom}, [^url]}} =
+               LlmsTxt.discover(url, Keyword.put(opts, :fetcher, :invalid))
+
+      assert {:error, {:llms_txt_not_found, {:invalid_llms_fetcher_reply, :atom}, [^url]}} =
+               LlmsTxt.discover(url, Keyword.put(opts, :fetcher, fn _url, _opts -> :ok end))
+
+      assert {:error, {:llms_txt_not_found, {:invalid_llms_body, :map}, [^url]}} =
+               LlmsTxt.discover(
+                 url,
+                 Keyword.put(opts, :fetcher, fn _url, _opts -> {:ok, %{}} end)
+               )
+
+      assert {:error, {:llms_txt_not_found, {:llms_fetcher_failed, %RuntimeError{}}, [^url]}} =
+               LlmsTxt.discover(
+                 url,
+                 Keyword.put(opts, :fetcher, fn _url, _opts -> raise "offline" end)
+               )
+
+      assert {:error, {:llms_txt_not_found, {:invalid_max_bytes, -1}, [^url]}} =
+               LlmsTxt.discover(
+                 url,
+                 Keyword.merge(opts,
+                   fetcher: fn _url, _opts -> {:ok, "unused"} end,
+                   max_bytes: -1
+                 )
+               )
+
+      assert {:ok, %LlmsTxt{url: ^url}} =
+               LlmsTxt.discover_from_page(
+                 "https://example.com/docs",
+                 [%{"href" => "/llms.txt", "rel" => "llms"}],
+                 network_policy: :any,
+                 fetcher: fn _url, _opts -> {:ok, "# Context"} end,
+                 header_fetcher: fn _url, _opts -> raise "bad headers" end
+               )
+    end
+
     test "look includes llms context when page metadata exposes it" do
       fetcher = fn
         "https://llms.local/llms.txt", _opts -> {:ok, "# Agent\n\n## Docs\n\n- [Docs](/docs)"}
@@ -1426,6 +1514,25 @@ defmodule SpectreLensTest do
       assert :ok = SpectreLens.stop_watch(watcher)
       assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 1_000
       refute Process.alive?(watcher.pid)
+    end
+
+    test "rejects invalid options and stops when its notification owner exits" do
+      tab = %Tab{protocol: FakeProtocol}
+
+      assert {:error, {:invalid_watcher_interval, 0}} = SpectreLens.watch(tab, every: 0)
+
+      assert {:error, {:invalid_watcher_notify, :invalid}} =
+               SpectreLens.watch(tab, notify: :invalid)
+
+      assert {:error, {:invalid_watcher_include, :everything}} =
+               SpectreLens.watch(tab, include: :everything)
+
+      notify = spawn(fn -> Process.sleep(:infinity) end)
+      assert {:ok, watcher} = SpectreLens.watch(tab, notify: notify, every: 60_000)
+      watcher_monitor = Process.monitor(watcher.pid)
+
+      Process.exit(notify, :kill)
+      assert_receive {:DOWN, ^watcher_monitor, :process, _pid, :normal}, 1_000
     end
   end
 

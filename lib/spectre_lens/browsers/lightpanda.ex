@@ -10,6 +10,7 @@ defmodule SpectreLens.Lightpanda do
   @default_http_timeout 10_000
   @default_watchdog_ms 30_000
   @shutdown_timeout 5_000
+  @staging_attempts 8
   @release_api "https://api.github.com/repos/lightpanda-io/browser/releases/tags"
 
   @type instance :: %{
@@ -44,8 +45,7 @@ defmodule SpectreLens.Lightpanda do
         System.find_executable("lightpanda"),
         default_path()
       ]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.map(&Path.expand/1)
+      |> Enum.flat_map(&expand_candidate/1)
 
     case Enum.find(candidates, &executable?/1) do
       nil -> {:error, :not_found}
@@ -74,40 +74,44 @@ defmodule SpectreLens.Lightpanda do
   @spec install(keyword()) :: {:ok, binary()} | {:error, term()}
   def install(opts \\ []) do
     Telemetry.span([:spectre_lens, :lightpanda, :install], install_metadata(opts), fn ->
-      out_dir = opts[:out] || Path.dirname(default_path())
       force? = Keyword.get(opts, :force, false)
-      dest = Path.join(Path.expand(out_dir), "lightpanda")
+      destination = install_destination(opts)
 
       result =
-        with :ok <- prepare_destination(dest, force?),
+        with {:ok, dest} <- destination,
+             :ok <- validate_force(force?),
+             :ok <- prepare_destination(dest, force?),
              {:ok, asset} <- install_asset(opts) do
           install_asset_at(asset, dest, opts)
         end
 
-      {result, %{result: result, dest: dest}}
+      {result, %{result: result, dest: match_value(destination)}}
     end)
   end
 
   @doc "Returns the platform-specific nightly download URL."
   @spec install_url(keyword()) :: {:ok, binary()} | {:error, term()}
   def install_url(opts \\ []) do
-    channel = Keyword.get(opts, :channel, "nightly") |> to_string()
     os = Keyword.get(opts, :os, :os.type())
-    arch = Keyword.get(opts, :arch, :erlang.system_info(:system_architecture) |> to_string())
 
-    with {:ok, artifact} <- artifact(os, arch) do
-      {:ok, "https://github.com/lightpanda-io/browser/releases/download/#{channel}/#{artifact}"}
+    with {:ok, channel} <- normalize_channel(Keyword.get(opts, :channel, "nightly")),
+         {:ok, arch} <- normalize_architecture(Keyword.get(opts, :arch, default_architecture())),
+         {:ok, artifact} <- artifact(os, arch) do
+      encoded_channel = URI.encode(channel, &URI.char_unreserved?/1)
+
+      {:ok,
+       "https://github.com/lightpanda-io/browser/releases/download/#{encoded_channel}/#{artifact}"}
     end
   end
 
   @doc "Returns the official release asset and SHA-256 digest for this platform."
   @spec release_asset(keyword()) :: {:ok, map()} | {:error, term()}
   def release_asset(opts \\ []) do
-    channel = Keyword.get(opts, :channel, "nightly") |> to_string()
     os = Keyword.get(opts, :os, :os.type())
-    arch = Keyword.get(opts, :arch, :erlang.system_info(:system_architecture) |> to_string())
 
-    with {:ok, artifact} <- artifact(os, arch),
+    with {:ok, channel} <- normalize_channel(Keyword.get(opts, :channel, "nightly")),
+         {:ok, arch} <- normalize_architecture(Keyword.get(opts, :arch, default_architecture())),
+         {:ok, artifact} <- artifact(os, arch),
          {:ok, release} <- fetch_release(channel, opts),
          {:ok, asset} <- find_release_asset(release, artifact),
          {:ok, checksum} <- normalize_checksum(map_value(asset, "digest")) do
@@ -125,11 +129,23 @@ defmodule SpectreLens.Lightpanda do
   @spec version(keyword()) :: binary() | nil
   def version(opts \\ []) do
     with {:ok, binary} <- detect(opts),
-         {output, 0} <- System.cmd(binary, ["version"], stderr_to_stdout: true) do
+         {:ok, output} <- run_version_command(binary) do
       String.trim(output)
     else
       _ -> nil
     end
+  end
+
+  @spec run_version_command(binary()) :: {:ok, binary()} | {:error, term()}
+  defp run_version_command(binary) do
+    case System.cmd(binary, ["version"], stderr_to_stdout: true) do
+      {output, 0} -> {:ok, output}
+      {_output, status} -> {:error, {:version_command_failed, status}}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   @doc "Checks whether a Lightpanda version satisfies the runtime contract."
@@ -206,14 +222,15 @@ defmodule SpectreLens.Lightpanda do
   defp resolve_port(opts) do
     case opts[:port] do
       nil -> free_port()
-      port when is_integer(port) and port > 0 -> {:ok, port}
+      port when is_integer(port) and port in 1..65_535 -> {:ok, port}
       port -> {:error, {:invalid_port, port}}
     end
   end
 
   @spec do_start_instance(keyword()) :: {:ok, instance()} | {:error, term()}
   defp do_start_instance(opts) do
-    with :ok <- SpectreLens.URLPolicy.validate_options(SpectreLens.URLPolicy.take_options(opts)),
+    with :ok <- validate_start_options(opts),
+         :ok <- SpectreLens.URLPolicy.validate_options(SpectreLens.URLPolicy.take_options(opts)),
          {:ok, binary} <- runtime_binary(opts),
          {:ok, version} <- validate_runtime_version(binary, opts),
          {:ok, port} <- resolve_port(opts),
@@ -328,7 +345,7 @@ defmodule SpectreLens.Lightpanda do
     endpoint = "http://#{endpoint_host(host)}:#{port}"
     process = {pid, os_pid}
 
-    case wait_for_ready(endpoint, process, opts[:startup_timeout] || 10_000) do
+    case wait_for_ready(endpoint, process, Keyword.get(opts, :startup_timeout, 10_000)) do
       :ok ->
         {:ok,
          %{
@@ -383,6 +400,32 @@ defmodule SpectreLens.Lightpanda do
     end
   end
 
+  @spec default_architecture() :: binary()
+  defp default_architecture, do: :erlang.system_info(:system_architecture) |> to_string()
+
+  @spec normalize_channel(term()) :: {:ok, binary()} | {:error, term()}
+  defp normalize_channel(channel) when is_binary(channel) and channel != "", do: {:ok, channel}
+  defp normalize_channel(channel) when is_atom(channel), do: {:ok, Atom.to_string(channel)}
+  defp normalize_channel(channel), do: {:error, {:invalid_lightpanda_channel, channel}}
+
+  @spec normalize_architecture(term()) :: {:ok, binary()} | {:error, term()}
+  defp normalize_architecture(arch) when is_binary(arch) and arch != "", do: {:ok, arch}
+  defp normalize_architecture(arch) when is_atom(arch), do: {:ok, Atom.to_string(arch)}
+  defp normalize_architecture(arch), do: {:error, {:unsupported_architecture, arch}}
+
+  @spec install_destination(keyword()) :: {:ok, binary()} | {:error, term()}
+  defp install_destination(opts) do
+    case opts[:out] || Path.dirname(default_path()) do
+      out_dir when is_binary(out_dir) and out_dir != "" ->
+        {:ok, Path.join(Path.expand(out_dir), "lightpanda")}
+
+      out_dir ->
+        {:error, {:invalid_lightpanda_install_directory, out_dir}}
+    end
+  rescue
+    _error -> {:error, {:invalid_lightpanda_install_directory, opts[:out]}}
+  end
+
   @spec prepare_destination(binary(), boolean()) :: :ok | {:error, term()}
   defp prepare_destination(dest, force?) do
     if File.exists?(dest) and not force? do
@@ -391,6 +434,10 @@ defmodule SpectreLens.Lightpanda do
       File.mkdir_p(Path.dirname(dest))
     end
   end
+
+  @spec validate_force(term()) :: :ok | {:error, term()}
+  defp validate_force(force?) when is_boolean(force?), do: :ok
+  defp validate_force(force?), do: {:error, {:invalid_lightpanda_force, force?}}
 
   @spec install_asset(keyword()) :: {:ok, map()} | {:error, term()}
   defp install_asset(opts) do
@@ -429,44 +476,91 @@ defmodule SpectreLens.Lightpanda do
 
   @spec install_asset_at(map(), binary(), keyword()) :: {:ok, binary()} | {:error, term()}
   defp install_asset_at(asset, dest, opts) do
-    temp = temporary_destination(dest)
+    case create_staging_destination(dest, @staging_attempts) do
+      {:ok, staging_dir, temp} ->
+        try do
+          with :ok <- download(asset.url, temp, opts),
+               :ok <- verify_checksum(temp, asset.sha256),
+               :ok <- File.chmod(temp, 0o755),
+               {:ok, _version} <- validate_runtime_version(temp, opts),
+               :ok <- commit_install(temp, dest, Keyword.get(opts, :force, false)) do
+            {:ok, dest}
+          end
+        after
+          File.rm_rf(staging_dir)
+        end
 
-    result =
-      with :ok <- download(asset.url, temp, opts),
-           :ok <- verify_checksum(temp, asset.sha256),
-           :ok <- File.chmod(temp, 0o755),
-           {:ok, _version} <- validate_runtime_version(temp, opts),
-           :ok <- File.rename(temp, dest) do
-        {:ok, dest}
-      end
-
-    File.rm(temp)
-    result
+      {:error, _reason} = error ->
+        error
+    end
   end
 
-  @spec temporary_destination(binary()) :: binary()
-  defp temporary_destination(dest) do
-    suffix = System.unique_integer([:positive, :monotonic]) |> Integer.to_string()
-    dest <> ".spectre-lens-" <> suffix <> ".tmp"
+  @spec create_staging_destination(binary(), non_neg_integer()) ::
+          {:ok, binary(), binary()} | {:error, term()}
+  defp create_staging_destination(_dest, 0),
+    do: {:error, :lightpanda_staging_collision}
+
+  defp create_staging_destination(dest, attempts_left) do
+    token = 18 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    staging_dir = dest <> ".spectre-lens-" <> token <> ".tmp"
+
+    case File.mkdir(staging_dir) do
+      :ok ->
+        case File.chmod(staging_dir, 0o700) do
+          :ok ->
+            {:ok, staging_dir, Path.join(staging_dir, "asset")}
+
+          {:error, reason} ->
+            File.rmdir(staging_dir)
+            {:error, reason}
+        end
+
+      {:error, :eexist} ->
+        create_staging_destination(dest, attempts_left - 1)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec commit_install(binary(), binary(), boolean()) :: :ok | {:error, term()}
+  defp commit_install(temp, dest, true), do: File.rename(temp, dest)
+
+  defp commit_install(temp, dest, false) do
+    case File.ln(temp, dest) do
+      :ok -> :ok
+      {:error, :eexist} -> {:error, {:already_exists, dest}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @spec download(binary(), binary(), keyword()) :: :ok | {:error, term()}
   defp download(url, dest, opts) do
-    case opts[:downloader] do
-      downloader when is_function(downloader, 2) ->
-        downloader.(url, dest)
+    result =
+      case opts[:downloader] do
+        downloader when is_function(downloader, 2) ->
+          downloader.(url, dest)
 
-      nil ->
-        system_download(url, dest)
+        nil ->
+          system_download(url, dest)
 
-      invalid ->
-        {:error, {:invalid_lightpanda_downloader, invalid}}
-    end
+        invalid ->
+          {:error, {:invalid_lightpanda_downloader, invalid}}
+      end
+
+    normalize_download_result(result)
   rescue
     error -> {:error, {:download_failed, error}}
   catch
     kind, reason -> {:error, {:download_failed, {kind, reason}}}
   end
+
+  @spec normalize_download_result(term()) :: :ok | {:error, term()}
+  defp normalize_download_result(:ok), do: :ok
+  defp normalize_download_result({:error, _reason} = error), do: error
+
+  defp normalize_download_result(other),
+    do: {:error, {:invalid_lightpanda_downloader_reply, other}}
 
   @spec system_download(binary(), binary()) :: :ok | {:error, term()}
   defp system_download(url, dest) do
@@ -563,6 +657,10 @@ defmodule SpectreLens.Lightpanda do
       invalid ->
         {:error, {:invalid_release_metadata, invalid}}
     end
+  rescue
+    error -> {:error, {:release_metadata_failed, error}}
+  catch
+    kind, reason -> {:error, {:release_metadata_failed, {kind, reason}}}
   end
 
   @spec find_release_asset(map(), binary()) :: {:ok, map()} | {:error, term()}
@@ -620,29 +718,49 @@ defmodule SpectreLens.Lightpanda do
   @spec check_ready_endpoint(binary(), {pid(), integer()}, integer()) ::
           :ok | {:error, term()}
   defp check_ready_endpoint(endpoint, process, deadline) do
-    case Req.get(endpoint <> "/json/version", retry: false, receive_timeout: 500) do
-      {:ok, %{status: status, body: %{"webSocketDebuggerUrl" => websocket}}}
-      when status in 200..299 and is_binary(websocket) ->
-        :ok
+    case remaining_timeout(deadline) do
+      0 ->
+        ready_timeout(endpoint)
 
-      _response ->
-        retry_ready_endpoint(endpoint, process, deadline)
+      remaining ->
+        case Req.get(endpoint <> "/json/version",
+               retry: false,
+               receive_timeout: min(remaining, 500)
+             ) do
+          {:ok, %{status: status, body: %{"webSocketDebuggerUrl" => websocket}}}
+          when status in 200..299 and is_binary(websocket) ->
+            :ok
+
+          _response ->
+            retry_ready_endpoint(endpoint, process, deadline)
+        end
     end
   end
 
   @spec retry_ready_endpoint(binary(), {pid(), integer()}, integer()) ::
           :ok | {:error, term()}
   defp retry_ready_endpoint(endpoint, process, deadline) do
-    if System.monotonic_time(:millisecond) < deadline do
-      Process.sleep(100)
-      do_wait_for_ready(endpoint, process, deadline)
-    else
-      Telemetry.emit([:spectre_lens, :lightpanda, :ready_timeout], %{}, %{
-        endpoint: endpoint
-      })
+    case remaining_timeout(deadline) do
+      0 ->
+        ready_timeout(endpoint)
 
-      {:error, {:not_ready, endpoint}}
+      remaining ->
+        Process.sleep(min(remaining, 100))
+        do_wait_for_ready(endpoint, process, deadline)
     end
+  end
+
+  @spec remaining_timeout(integer()) :: non_neg_integer()
+  defp remaining_timeout(deadline),
+    do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  @spec ready_timeout(binary()) :: {:error, {:not_ready, binary()}}
+  defp ready_timeout(endpoint) do
+    Telemetry.emit([:spectre_lens, :lightpanda, :ready_timeout], %{}, %{
+      endpoint: endpoint
+    })
+
+    {:error, {:not_ready, endpoint}}
   end
 
   @spec ensure_exec_started() :: :ok | {:error, term()}
@@ -670,6 +788,15 @@ defmodule SpectreLens.Lightpanda do
       _other -> false
     end
   end
+
+  @spec expand_candidate(term()) :: [binary()]
+  defp expand_candidate(candidate) when is_binary(candidate) and candidate != "" do
+    [Path.expand(candidate)]
+  rescue
+    _error -> []
+  end
+
+  defp expand_candidate(_candidate), do: []
 
   @spec validate_runtime_version(binary(), keyword()) :: {:ok, binary()} | {:error, term()}
   defp validate_runtime_version(binary, opts) do
@@ -732,6 +859,30 @@ defmodule SpectreLens.Lightpanda do
   end
 
   defp validate_host(host, _opts), do: {:error, {:invalid_lightpanda_host, host}}
+
+  @spec validate_start_options(keyword()) :: :ok | {:error, term()}
+  defp validate_start_options(opts) do
+    with :ok <- validate_boolean_option(opts, :allow_remote_bind, false),
+         :ok <- validate_boolean_option(opts, :check_version, true) do
+      validate_timeout_option(opts, :startup_timeout, 10_000)
+    end
+  end
+
+  @spec validate_boolean_option(keyword(), atom(), boolean()) :: :ok | {:error, term()}
+  defp validate_boolean_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_boolean(value) -> :ok
+      value -> {:error, {:invalid_lightpanda_option, key, value}}
+    end
+  end
+
+  @spec validate_timeout_option(keyword(), atom(), non_neg_integer()) :: :ok | {:error, term()}
+  defp validate_timeout_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value >= 0 -> :ok
+      value -> {:error, {:invalid_lightpanda_option, key, value}}
+    end
+  end
 
   @spec loopback_host?(binary()) :: boolean()
   defp loopback_host?(host), do: host in ["127.0.0.1", "::1", "localhost"]

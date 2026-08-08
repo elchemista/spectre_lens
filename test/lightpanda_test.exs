@@ -120,6 +120,28 @@ defmodule SpectreLens.LightpandaTest do
     assert Path.wildcard(Path.join(directory, "*.tmp")) == []
   end
 
+  test "a concurrent destination cannot be clobbered by a non-forced install" do
+    directory = temporary_directory()
+    destination = Path.join(directory, "lightpanda")
+    checksum = sha256(@current_script)
+
+    downloader = fn _url, staging_path ->
+      :ok = File.write(staging_path, @current_script)
+      File.write(destination, "concurrent installation")
+    end
+
+    assert {:error, {:already_exists, ^destination}} =
+             Lightpanda.install(
+               out: directory,
+               url: "https://mirror.invalid/lightpanda",
+               sha256: checksum,
+               downloader: downloader
+             )
+
+    assert File.read!(destination) == "concurrent installation"
+    assert Path.wildcard(Path.join(directory, "*.tmp")) == []
+  end
+
   test "a checksum failure preserves an existing installation and removes partial files" do
     directory = temporary_directory()
     destination = Path.join(directory, "lightpanda")
@@ -166,6 +188,9 @@ defmodule SpectreLens.LightpandaTest do
   end
 
   test "platform resolution supports current Linux and macOS architectures explicitly" do
+    assert {:ok, default_url} = Lightpanda.install_url()
+    assert String.starts_with?(default_url, "https://github.com/lightpanda-io/browser/releases/")
+
     assert {:ok, url} =
              Lightpanda.install_url(
                channel: :nightly,
@@ -191,6 +216,23 @@ defmodule SpectreLens.LightpandaTest do
 
     assert {:error, {:unsupported_platform, :freebsd}} =
              Lightpanda.install_url(os: :freebsd, arch: "x86_64")
+
+    assert {:ok, encoded_channel} =
+             Lightpanda.install_url(os: :linux, arch: :amd64, channel: "preview/safe")
+
+    assert encoded_channel =~ "/preview%2Fsafe/lightpanda-x86_64-linux"
+
+    assert {:error, {:invalid_lightpanda_channel, %{unsafe: true}}} =
+             Lightpanda.install_url(os: :linux, arch: "amd64", channel: %{unsafe: true})
+
+    assert {:error, {:invalid_lightpanda_channel, ""}} =
+             Lightpanda.install_url(os: :linux, arch: "amd64", channel: "")
+
+    assert {:error, {:unsupported_architecture, %{cpu: "amd64"}}} =
+             Lightpanda.install_url(os: :linux, arch: %{cpu: "amd64"})
+
+    assert {:error, {:unsupported_architecture, ""}} =
+             Lightpanda.install_url(os: :linux, arch: "")
   end
 
   test "release metadata rejects missing, malformed and untrusted assets" do
@@ -314,6 +356,40 @@ defmodule SpectreLens.LightpandaTest do
                downloader: fn _url, _path -> throw(:offline) end
              )
 
+    assert {:error, {:invalid_lightpanda_downloader_reply, :downloaded}} =
+             Lightpanda.install(
+               out: directory,
+               force: true,
+               url: "https://example.invalid/lightpanda",
+               sha256: checksum,
+               downloader: fn _url, _path -> :downloaded end
+             )
+
+    assert {:error, {:invalid_lightpanda_force, :yes}} =
+             Lightpanda.install(
+               out: directory,
+               force: :yes,
+               url: "https://example.invalid/lightpanda",
+               sha256: checksum,
+               downloader: fn _url, path -> File.write(path, @current_script) end
+             )
+
+    assert {:error, {:invalid_lightpanda_install_directory, %{path: directory}}} =
+             Lightpanda.install(
+               out: %{path: directory},
+               url: "https://example.invalid/lightpanda",
+               sha256: checksum,
+               downloader: fn _url, path -> File.write(path, @current_script) end
+             )
+
+    assert {:error, {:invalid_lightpanda_install_directory, ""}} =
+             Lightpanda.install(
+               out: "",
+               url: "https://example.invalid/lightpanda",
+               sha256: checksum,
+               downloader: fn _url, path -> File.write(path, @current_script) end
+             )
+
     assert File.read!(destination) == "keep"
     assert Path.wildcard(Path.join(directory, "*.tmp")) == []
   end
@@ -369,8 +445,47 @@ defmodule SpectreLens.LightpandaTest do
     assert {:error, {:lightpanda_version_failed, 3, "version command failed"}} =
              Lightpanda.start_instance(binary: failed_version)
 
+    assert Lightpanda.version(binary: failed_version) == nil
+
     assert {:error, {:invalid_port, 0}} =
              Lightpanda.start_instance(binary: exits_during_start, port: 0)
+
+    assert {:error, {:invalid_port, 65_536}} =
+             Lightpanda.start_instance(binary: exits_during_start, port: 65_536)
+
+    assert {:error, {:invalid_lightpanda_option, :startup_timeout, -1}} =
+             Lightpanda.start_instance(binary: exits_during_start, startup_timeout: -1)
+
+    assert {:error, {:invalid_lightpanda_option, :allow_remote_bind, "false"}} =
+             Lightpanda.start_instance(
+               binary: exits_during_start,
+               host: "0.0.0.0",
+               allow_remote_bind: "false"
+             )
+
+    assert {:error, {:invalid_lightpanda_option, :check_version, :disabled}} =
+             Lightpanda.start_instance(binary: exits_during_start, check_version: :disabled)
+
+    waits_during_start =
+      write_script(
+        directory,
+        "waits-during-start",
+        """
+        #!/bin/sh
+        if [ "$1" = "version" ]; then
+          echo "1.0.0-nightly.8362+test"
+          exit 0
+        fi
+        sleep 2
+        """
+      )
+
+    assert {:error, {:not_ready, _endpoint}} =
+             Lightpanda.start_instance(
+               binary: waits_during_start,
+               port: free_port!(),
+               startup_timeout: 0
+             )
 
     assert {:error, {:invalid_lightpanda_host, 123}} =
              Lightpanda.start_instance(binary: exits_during_start, host: 123)

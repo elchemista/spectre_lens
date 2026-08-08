@@ -150,6 +150,14 @@ defmodule SpectreLens.BrowserAdapterContractTest do
            } = RemoteCDP.doctor(endpoint: endpoint)
 
     assert diagnostic_endpoint == endpoint
+
+    assert %{
+             backend: RemoteCDP,
+             available?: false,
+             reachable?: false,
+             endpoint: "file://browser.invalid",
+             error: SpectreLens.ConnectionError
+           } = RemoteCDP.doctor(endpoint: "file://browser.invalid/private?token=secret")
   end
 
   test "local Lightpanda backend exposes fixed capacity and process lifecycle events" do

@@ -418,6 +418,27 @@ defmodule SpectreLens.BrowserRuntimeTest do
     assert :ok = SpectreLens.close(runtime)
   end
 
+  test "malformed tab options are rejected without terminating the shared runtime" do
+    assert {:ok, runtime} =
+             SpectreLens.open(
+               backend: FakeBackend,
+               protocol: FakeProtocol,
+               test_pid: self(),
+               network_policy: :any
+             )
+
+    assert {:error, {:invalid_new_tab_options, :invalid}} =
+             Runtime.new_tab(runtime, :invalid)
+
+    assert {:error, {:invalid_new_tab_options, [:not_a_keyword]}} =
+             GenServer.call(runtime.pid, {:new_tab, [:not_a_keyword]})
+
+    assert Process.alive?(runtime.pid)
+    assert {:ok, tab} = SpectreLens.new_tab(runtime, tab_id: "still-alive")
+    assert :ok = SpectreLens.close_tab(tab)
+    assert :ok = SpectreLens.close(runtime)
+  end
+
   @tag capture_log: true
   test "stops the runtime and every owned instance when a backend reports failure" do
     previous = Process.flag(:trap_exit, true)

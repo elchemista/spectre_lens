@@ -122,7 +122,7 @@ defmodule SpectreLens.Session do
 
   @spec normalize_cookie(term()) :: map()
   defp normalize_cookie(cookie) when is_map(cookie) do
-    Map.new(cookie, fn {key, value} -> {to_string(key), normalize_value(value)} end)
+    Map.new(cookie, fn {key, value} -> {normalize_key(key), normalize_value(value)} end)
   end
 
   defp normalize_cookie(other), do: %{"value" => normalize_value(other)}
@@ -130,7 +130,7 @@ defmodule SpectreLens.Session do
   @spec normalize_storage(term()) :: storage()
   defp normalize_storage(storage) when is_map(storage) do
     Map.new(storage, fn {origin, values} ->
-      {to_string(origin), normalize_storage_values(values)}
+      {normalize_key(origin), normalize_storage_values(values)}
     end)
   end
 
@@ -138,22 +138,46 @@ defmodule SpectreLens.Session do
 
   @spec normalize_storage_values(term()) :: %{optional(binary()) => binary()}
   defp normalize_storage_values(values) when is_map(values) do
-    Map.new(values, fn {key, value} -> {to_string(key), to_string(value)} end)
+    Map.new(values, fn {key, value} ->
+      {normalize_key(key), normalize_storage_value(value)}
+    end)
   end
 
   defp normalize_storage_values(_other), do: %{}
 
   @spec normalize_metadata(term()) :: map()
   defp normalize_metadata(metadata) when is_map(metadata) do
-    Map.new(metadata, fn {key, value} -> {to_string(key), normalize_value(value)} end)
+    Map.new(metadata, fn {key, value} -> {normalize_key(key), normalize_value(value)} end)
   end
 
   defp normalize_metadata(_other), do: %{}
 
   @spec normalize_value(term()) :: term()
   defp normalize_value(value) when is_boolean(value) or is_nil(value), do: value
+  defp normalize_value(value) when is_binary(value) or is_number(value), do: value
   defp normalize_value(value) when is_atom(value), do: to_string(value)
-  defp normalize_value(value), do: value
+
+  defp normalize_value(value) when is_list(value),
+    do: Enum.map(value, &normalize_value/1)
+
+  defp normalize_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested} -> {normalize_key(key), normalize_value(nested)} end)
+  end
+
+  defp normalize_value(value), do: inspect(value)
+
+  @spec normalize_storage_value(term()) :: binary()
+  defp normalize_storage_value(value)
+       when is_binary(value) or is_atom(value) or is_number(value),
+       do: to_string(value)
+
+  defp normalize_storage_value(value), do: inspect(value)
+
+  @spec normalize_key(term()) :: binary()
+  defp normalize_key(key) when is_binary(key) or is_atom(key) or is_number(key),
+    do: to_string(key)
+
+  defp normalize_key(key), do: inspect(key)
 
   @spec deep_merge_storage(storage(), storage()) :: storage()
   defp deep_merge_storage(left, right) do

@@ -55,6 +55,46 @@ defmodule SpectreLens.CDPConnectionContractTest do
     assert_receive {:test_cdp_command, "Runtime.slow", %{}, nil}
   end
 
+  test "send_command rejects malformed boundaries and fails promptly with its transport" do
+    {:ok, conn} = TestCDP.start(owner: self())
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_method, ""}}} =
+             Connection.send_command(conn, "")
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_params, :list}}} =
+             Connection.send_command(conn, "Runtime.evaluate", [])
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_timeout, -1}}} =
+             Connection.send_command(conn, "Runtime.evaluate", %{}, -1)
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_connection, :not_a_pid}}} =
+             Connection.send_command(:not_a_pid, "Runtime.evaluate")
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_session_id, :reference}}} =
+             Connection.send_command(conn, "Runtime.evaluate", %{}, 10, make_ref())
+
+    for {params, type} <- [
+          {:invalid, :atom},
+          {"invalid", :binary},
+          {fn -> :invalid end, :function},
+          {1, :integer},
+          {self(), :pid},
+          {make_ref(), :reference}
+        ] do
+      assert {:error, %ConnectionError{reason: {:invalid_cdp_params, ^type}}} =
+               Connection.send_command(conn, "Runtime.evaluate", params)
+    end
+
+    assert :ok = TestCDP.queue_reply(conn, "Runtime.blocked", :ignore)
+
+    command = Task.async(fn -> Connection.send_command(conn, "Runtime.blocked", %{}, 5_000) end)
+    assert_receive {:test_cdp_command, "Runtime.blocked", %{}, nil}
+    GenServer.stop(conn, :transport_failed)
+
+    assert {:error, %ConnectionError{reason: {:connection_down, :transport_failed}}} =
+             Task.await(command, 500)
+  end
+
   test "event waiters support scoped delivery, errors, cancellation and bare refs" do
     {:ok, conn} = TestCDP.start()
     on_exit(fn -> if Process.alive?(conn), do: GenServer.stop(conn) end)
@@ -91,6 +131,10 @@ defmodule SpectreLens.CDPConnectionContractTest do
     send(self(), {:spectre_lens_cdp_event, bare_success_ref, %{value: 1}})
     assert {:ok, %{value: 1}} = Connection.await_event(bare_success_ref, 10)
 
+    default_timeout_ref = make_ref()
+    send(self(), {:spectre_lens_cdp_event, default_timeout_ref, %{default: true}})
+    assert {:ok, %{default: true}} = Connection.await_event(default_timeout_ref)
+
     bare_error_ref = make_ref()
     send(self(), {:spectre_lens_cdp_event_error, bare_error_ref, :detached})
 
@@ -99,6 +143,30 @@ defmodule SpectreLens.CDPConnectionContractTest do
 
     assert {:error, %TimeoutError{operation: :await_event, timeout_ms: 0}} =
              Connection.await_event(make_ref(), 0)
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_timeout, -1}}} =
+             Connection.await_event(make_ref(), -1)
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_event_waiter, :tuple}}} =
+             Connection.await_event({:not, :a_waiter}, 10)
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_method, ""}}} =
+             Connection.wait_for_event(conn, "", 10)
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_timeout, -1}}} =
+             Connection.wait_for_event(conn, "Page.ready", -1)
+  end
+
+  test "event waits fail promptly when their transport exits" do
+    {:ok, conn} = TestCDP.start()
+    waiter = Connection.register_event_waiter(conn, "Page.never")
+
+    task = Task.async(fn -> Connection.await_event(waiter, 5_000) end)
+    assert wait_until(fn -> :sys.get_state(conn).waiters != %{} end)
+    GenServer.stop(conn, :transport_failed)
+
+    assert {:error, %ConnectionError{reason: {:connection_down, :transport_failed}}} =
+             Task.await(task, 500)
   end
 
   test "subscriptions are persistent, de-duplicated and removable" do
@@ -182,6 +250,21 @@ defmodule SpectreLens.CDPConnectionContractTest do
     assert {:ok, ^state} = Connection.handle_frame({:text, "not-json"}, state)
     assert {:ok, ^state} = Connection.handle_frame({:binary, <<1, 2, 3>>}, state)
     assert {:ok, ^state} = Connection.handle_info(:unrelated, state)
+
+    invalid_ref = make_ref()
+
+    assert {:ok, ^state} =
+             Connection.handle_cast(
+               {:send_command, "Runtime.callFunctionOn", %{object: self()}, nil, self(),
+                invalid_ref},
+               state
+             )
+
+    assert_receive {:spectre_lens_cdp_error, ^invalid_ref,
+                    %{
+                      "code" => -32_602,
+                      "message" => "CDP command parameters are not JSON encodable"
+                    }}
   end
 
   test "callback event routing prefers exact waiters and falls back to unscoped ones" do
@@ -445,6 +528,21 @@ defmodule SpectreLens.CDPConnectionContractTest do
             %ConnectionError{
               reason: {:unexpected_version_response, 503, %{"status" => "starting"}}
             }} = Connection.open("http://127.0.0.1:#{invalid_port}")
+
+    assert {:error, %ConnectionError{reason: {:unsupported_cdp_endpoint_scheme, "file"}}} =
+             Connection.open("file:///tmp/browser.sock")
+
+    assert {:error, %ConnectionError{reason: :invalid_cdp_endpoint}} =
+             Connection.open("ws://")
+
+    assert {:error, %ConnectionError{reason: {:invalid_cdp_endpoint_type, :map}}} =
+             Connection.open(%{endpoint: "ws://127.0.0.1:9222"})
+
+    malformed_port =
+      start_http_server(200, Jason.encode!(%{"webSocketDebuggerUrl" => %{host: "private"}}))
+
+    assert {:error, %ConnectionError{reason: {:invalid_websocket_endpoint, :map}}} =
+             Connection.open("http://127.0.0.1:#{malformed_port}")
   end
 
   test "close is safe for live and already terminated transports" do
