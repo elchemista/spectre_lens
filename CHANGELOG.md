@@ -4,13 +4,15 @@ All notable changes to Spectre Lens are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-13
+
 ### Fixed
 
 - Prevented `mix spectre.lens.install` and `mix spectre.lens.doctor` from
   starting the consumer application and its unrelated supervision tree.
 - Removed the compile-time and runtime dependency on Spectre. Stack and Action
   integration now binds only when Spectre is separately available, while the
-  repository keeps its GitHub dependency test-only.
+  repository keeps its Hex dependency test-only.
 - Hardened CDP commands and event waits against malformed inputs, JSON encoding
   failures, dead transports, invalid discovery endpoints, and malformed browser
   responses without leaking pending callers or crashing the shared connection.
@@ -29,8 +31,12 @@ All notable changes to Spectre Lens are documented in this file.
 
 ### Changed
 
-- Made distribution GitHub-only by removing Hex package metadata and package
-  build CI, and pinned the test dependency to the Spectre GitHub `0.2.0` tag.
+- Kept Lens distribution GitHub-only without Hex package metadata.
+- Resolved the test-only Spectre dependency from Hex with the `~> 0.3.0`
+  requirement.
+- Raised the Lens package, Action provider, and Stack compatibility contracts
+  to `0.3.0` and Spectre `~> 0.3.0`.
+- Enforced strict Credo in CI alongside the existing Dialyzer job.
 
 ## [0.2.0] - 2026-08-01
 
@@ -81,7 +87,8 @@ All notable changes to Spectre Lens are documented in this file.
 - Autonomous `wake on_change` scheduling and continuity-plane lifecycle remain
   later migration phases.
 
-[Unreleased]: https://github.com/elchemista/spectre_lens/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/elchemista/spectre_lens/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/elchemista/spectre_lens/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/elchemista/spectre_lens/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/elchemista/spectre_lens/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/elchemista/spectre_lens/compare/v0.1.4...v0.1.5
