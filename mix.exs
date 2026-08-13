@@ -17,7 +17,6 @@ defmodule SpectreLens.MixProject do
       aliases: aliases(),
       description: description(),
       dialyzer: dialyzer(),
-      docs: docs(),
       source_url: @source_url,
       homepage_url: @source_url
     ]
@@ -40,7 +39,6 @@ defmodule SpectreLens.MixProject do
       {:websockex, "~> 0.5.1"},
       {:erlexec, "~> 2.3.4"},
       {:telemetry, "~> 1.4"},
-      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
@@ -54,20 +52,6 @@ defmodule SpectreLens.MixProject do
 
   defp description do
     "Agent-first, backend-neutral browser perception for Elixir."
-  end
-
-  defp docs do
-    [
-      main: "readme",
-      extras: [
-        "README.md",
-        "docs/PUBLIC_API.md",
-        "CHANGELOG.md",
-        "LICENSE"
-      ],
-      source_ref: "v#{@version}",
-      source_url: @source_url
-    ]
   end
 
   defp dialyzer do

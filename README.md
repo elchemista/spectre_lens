@@ -29,7 +29,7 @@ own policy, idempotency, Effect execution, and operational-loop state.
 Version `0.1.6` is a consolidation-only release with no new runtime feature and
 no intentional breaking change. Elixir 1.19 on Erlang/OTP 28 is the initially
 guaranteed pair. Uniform CI runs format, warnings-as-errors compilation, tests,
-Credo, Dialyzer, and ExDoc. Its explicit API
+Credo, and Dialyzer. Its explicit API
 manifest is the compatibility fence while Lens participates in later `0.3.0`
 work.
 
