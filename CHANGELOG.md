@@ -4,6 +4,12 @@ All notable changes to Spectre Lens are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept diagnostic endpoint redaction compatible with the opaque `URI` type on
+  Elixir 1.19/OTP 28, eliminating the two Dialyzer errors without exposing
+  credentials, paths, or query parameters.
+
 ## [0.3.0] - 2026-08-13
 
 ### Fixed
@@ -36,7 +42,7 @@ All notable changes to Spectre Lens are documented in this file.
   requirement.
 - Raised the Lens package, Action provider, and Stack compatibility contracts
   to `0.3.0` and Spectre `~> 0.3.0`.
-- Enforced strict Credo in CI alongside the existing Dialyzer job.
+- Ran default Credo checks in CI alongside the existing Dialyzer job.
 
 ## [0.2.0] - 2026-08-01
 

@@ -898,8 +898,7 @@ defmodule SpectreLens.Runtime do
   defp safe_endpoint(endpoint) when is_binary(endpoint) do
     case URI.parse(endpoint) do
       %URI{scheme: scheme, host: host} = uri when is_binary(scheme) and is_binary(host) ->
-        %URI{scheme: scheme, host: host, port: uri.port}
-        |> URI.to_string()
+        redacted_endpoint(scheme, host, uri.port)
 
       _invalid ->
         "[redacted-endpoint]"
@@ -909,6 +908,13 @@ defmodule SpectreLens.Runtime do
   end
 
   defp safe_endpoint(_endpoint), do: nil
+
+  @spec redacted_endpoint(binary(), binary(), non_neg_integer() | nil) :: binary()
+  defp redacted_endpoint(scheme, host, port) do
+    host = if String.contains?(host, ":"), do: "[#{host}]", else: host
+    port = if is_integer(port) and port != URI.default_port(scheme), do: ":#{port}", else: ""
+    "#{scheme}://#{host}#{port}"
+  end
 
   @spec safe_metadata(term()) :: term()
   defp safe_metadata(metadata) when is_map(metadata) do
