@@ -882,6 +882,19 @@ defmodule SpectreLens.BrowserRuntimeTest do
     assert :ok = Runtime.close(runtime)
   end
 
+  test "runtime diagnostics preserve IPv6 endpoint shape while redacting secrets" do
+    assert {:ok, runtime} =
+             SpectreLens.open(
+               backend: FakeBackend,
+               protocol: FakeProtocol,
+               test_pid: self(),
+               endpoint: "wss://user:secret@[2001:db8::1]:9443/private?token=secret"
+             )
+
+    assert %{instances: [%{endpoint: "wss://[2001:db8::1]:9443"}]} = Runtime.info(runtime)
+    assert :ok = Runtime.close(runtime)
+  end
+
   test "Lens action provider executes portable browser operations through one runtime" do
     alias Spectre.Action
     alias Spectre.Context

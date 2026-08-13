@@ -158,6 +158,14 @@ defmodule SpectreLens.BrowserAdapterContractTest do
              endpoint: "file://browser.invalid",
              error: SpectreLens.ConnectionError
            } = RemoteCDP.doctor(endpoint: "file://browser.invalid/private?token=secret")
+
+    assert %{
+             backend: RemoteCDP,
+             available?: false,
+             reachable?: false,
+             endpoint: "ws://[::1]:1",
+             error: WebSockex.ConnError
+           } = RemoteCDP.doctor(endpoint: "ws://agent:secret@[::1]:1/private?token=secret")
   end
 
   test "local Lightpanda backend exposes fixed capacity and process lifecycle events" do
