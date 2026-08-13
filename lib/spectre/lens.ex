@@ -16,7 +16,7 @@ defmodule Spectre.Lens do
   owning a second compiler.
   """
 
-  @version "0.2.0"
+  @version "0.3.0"
   @spectre_definition Module.concat(["Spectre", "Definition"])
   @spectre_extension Module.concat(["Spectre", "Extension"])
   @spectre_stack Module.concat(["Spectre", "Stack"])
@@ -42,7 +42,7 @@ defmodule Spectre.Lens do
       module: __MODULE__,
       version: @version,
       contract: 1,
-      spectre: "~> 0.2.0",
+      spectre: "~> 0.3.0",
       provides: [{:service, :lens}],
       actions: [
         {:lens, :open},
