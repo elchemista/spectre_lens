@@ -6,6 +6,10 @@ All notable changes to Spectre Lens are documented in this file.
 
 ### Fixed
 
+- Compiled the Stack contract and its Agent binding in one test boundary so
+  integrity validation is stable on GitHub Actions' Elixir 1.19/OTP 28 runner.
+- Removed ExDoc and the documentation CI job; this GitHub-only distribution
+  keeps its documentation as repository Markdown.
 - Kept diagnostic endpoint redaction compatible with the opaque `URI` type on
   Elixir 1.19/OTP 28, eliminating the two Dialyzer errors without exposing
   credentials, paths, or query parameters.
