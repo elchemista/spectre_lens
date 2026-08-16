@@ -1,7 +1,9 @@
 defmodule SpectreLens.StackContractTest do
   use ExUnit.Case, async: true
 
+  alias Spectre.Action
   alias Spectre.Action.Provider
+  alias Spectre.Action.Schema
   alias Spectre.Stack.Contract.V1
   alias Spectre.Stack.Definition
   alias Spectre.Stack.Runtime
@@ -9,6 +11,7 @@ defmodule SpectreLens.StackContractTest do
   alias SpectreLens.Protocol
   alias SpectreLens.StackContractAgent
   alias SpectreLens.StackContractStack
+  alias SpectreLens.TabRef
   alias SpectreLens.URLPolicy
 
   test "publishes the versioned perception package manifest" do
@@ -16,7 +19,7 @@ defmodule SpectreLens.StackContractTest do
     assert {:ok, package} = V1.verify_installable(Spectre.Lens)
     assert package.id == :lens
     assert package.version == "0.1.0"
-    assert package.spectre == "~> 0.3.0"
+    assert package.spectre == "~> 0.3.2"
     assert package.provides == [{:service, :lens}]
     assert package.operations == []
 
@@ -66,6 +69,80 @@ defmodule SpectreLens.StackContractTest do
     assert {:ok, specs} = Provider.actions(provider, :all)
     assert Enum.map(specs, & &1.name) == [:open, :look, :discover, :act, :export]
     assert Enum.all?(specs, &(&1.visibility == :deterministic))
+  end
+
+  test "declared action schemas accept the arguments the provider actually executes" do
+    assert {:ok, mount} = Spectre.ActionConfig.provider(StackContractAgent, :lens)
+
+    {:ok, ref} =
+      TabRef.new(%SpectreLens.Tab{
+        instance_id: 1,
+        target_id: "target-1",
+        session_id: "session-1"
+      })
+
+    {:ok, tab} = TabRef.to_map(ref)
+
+    accepted = [
+      {:open, %{"url" => "https://example.test"}},
+      {:open, %{"url" => "https://example.test", "opts" => %{"timeout" => 1_000}}},
+      {:look, %{"tab" => tab}},
+      {:look, %{"url" => "https://example.test", "opts" => %{"include" => ["markdown"]}}},
+      {:discover, %{"url" => "https://example.test", "goal" => "buy"}},
+      {:act, %{"tab" => tab, "action" => %{"type" => "click", "text" => "Save"}}},
+      {:act, %{"tab" => tab, "action" => %{"type" => "navigate", "url" => "https://a.test"}}},
+      {:act,
+       %{
+         "tab" => tab,
+         "action" => %{
+           "type" => "submit",
+           "form" => "#f",
+           "fields" => [%{"name" => "q", "value" => "lens"}]
+         }
+       }},
+      {:act, %{"tab" => tab, "action" => %{"type" => "scroll", "y" => 400}}},
+      {:export, %{"tab" => tab, "type" => :markdown}},
+      {:export, %{"tab" => tab, "type" => "markdown"}}
+    ]
+
+    for {name, args} <- accepted do
+      action = Action.new(name, via: :lens, args: args)
+
+      assert Provider.validate_arguments(mount, action) == :ok,
+             "rejected #{name}: #{inspect(args)}"
+    end
+
+    rejected = [
+      {:open, %{}, ["url"], :required},
+      {:export, %{"tab" => tab, "type" => :video}, ["type"], :enum},
+      {:discover, %{"url" => :not_a_url}, ["url"], :type},
+      {:look, %{"tab" => ref}, ["tab"], :type},
+      {:act, %{"tab" => tab, "action" => {:click, "#save"}}, ["action"], :type},
+      {:act, %{"tab" => tab, "action" => %{"type" => "evaluate"}}, ["action", "type"], :enum},
+      {:look, %{"opts" => %{"network_policy" => "any"}}, ["opts", "network_policy"],
+       :additional_property},
+      {:look, %{"opts" => %{"include" => ["cookies"]}}, ["opts", "include", 0], :enum}
+    ]
+
+    for {name, args, path, rule} <- rejected do
+      action = Action.new(name, via: :lens, args: args)
+
+      assert Provider.validate_arguments(mount, action) ==
+               {:error, {:action_arguments_outside_schema, path, rule}},
+             "accepted #{name}: #{inspect(args)}"
+    end
+  end
+
+  test "every declared action schema is closed to undeclared arguments" do
+    assert {:ok, mount} = Spectre.ActionConfig.provider(StackContractAgent, :lens)
+    assert {:ok, specs} = Provider.actions(mount, :all)
+
+    for spec <- specs do
+      assert Schema.constrained?(spec.schema), "#{spec.name} declares no constraint"
+
+      assert Schema.rejects_additional_properties?(spec.schema),
+             "#{spec.name} leaves a declared object open"
+    end
   end
 
   test "declares an isolated caller-owned browser runtime resource" do

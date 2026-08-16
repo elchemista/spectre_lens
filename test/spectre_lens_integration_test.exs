@@ -17,17 +17,14 @@ defmodule SpectreLensIntegrationTest do
     assert {:ok, lens} = SpectreLens.open(instances: 1)
 
     try do
+      # Pin the reported shape, not the installed nightly build.
       assert %{
                backend: SpectreLens.Browsers.Lightpanda,
                protocol: SpectreLens.Protocol.Lightpanda,
-               instances: [
-                 %{
-                   metadata: %{
-                     version: "1.0.0-nightly.8362" <> _build
-                   }
-                 }
-               ]
+               instances: [%{metadata: %{version: version, ownership: :local}}]
              } = SpectreLens.runtime_info(lens)
+
+      assert SpectreLens.Lightpanda.compatible_version?(version)
 
       assert {:ok, tab} = SpectreLens.new_tab(lens, url: "https://example.com")
 

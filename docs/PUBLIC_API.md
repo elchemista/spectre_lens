@@ -1,7 +1,7 @@
 # Spectre Lens public API — 0.1.0
 
 This file is the normative public API manifest for Spectre Lens `0.1.0`. Its
-package and Stack contracts target Spectre `0.3.0`. Compatibility guarantees
+package and Stack contracts target Spectre `0.3.2`. Compatibility guarantees
 apply only to the
 modules and callables listed below. Any module, function, macro, or callback
 not listed here is an implementation detail even when it is exported or
@@ -103,7 +103,7 @@ type, and struct contract.
   - functions: `merge/2`, `new/0`, `new/1`, `normalize/1`, `storage_for_origin/2`, `to_map/1`
 - `SpectreLens.Tab`
 - `SpectreLens.TabRef`
-  - functions: `new/1`
+  - functions: `from_map/1`, `new/1`, `to_map/1`
 - `SpectreLens.Telemetry`
   - functions: `emit/1`, `emit/2`, `emit/3`, `events/0`, `span/3`, `span_events/0`
 - `SpectreLens.TimeoutError`

@@ -42,7 +42,7 @@ defmodule Spectre.Lens do
       module: __MODULE__,
       version: @version,
       contract: 1,
-      spectre: "~> 0.3.0",
+      spectre: "~> 0.3.2",
       provides: [{:service, :lens}],
       actions: [
         {:lens, :open},

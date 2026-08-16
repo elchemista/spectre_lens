@@ -4,8 +4,38 @@ All notable changes to Spectre Lens are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the Lens package and Stack compatibility contracts to Spectre
+  `~> 0.3.2` and resolved the test-only Hex dependency at that version.
+- **Breaking (Action boundary only).** Every Lens Action argument is now plain
+  JSON, so Spectre 0.3.2 can validate it and `mix spectre.doctor` reports no
+  open planner schema. The `:open` Action returns `SpectreLens.TabRef.to_map/1`
+  instead of the struct; `:act` takes an object such as
+  `%{"type" => "click", "text" => "Sign in"}` instead of a `{:click, ref}`
+  tuple; and `opts` is bounded to `timeout`, `max_depth`, `max_pages`,
+  `max_links_per_page`, `max_candidates` and `include`. Runtime controls such
+  as `network_policy` and `scorer` are no longer reachable from an Action and
+  stay with the compiled installation, so a planned Action cannot widen the
+  network policy. `SpectreLens.act/3`, `SpectreLens.resolve_tab/2` and the
+  `%SpectreLens.TabRef{}` struct are unchanged.
+- Added `SpectreLens.TabRef.to_map/1` and `SpectreLens.TabRef.from_map/1`. An
+  atom instance id has no JSON form and is rejected rather than stringified,
+  since it would not survive the round trip `resolve_tab/2` relies on.
+
 ### Fixed
 
+- Declared Action argument schemas that Spectre 0.3.2 accepts. Its new
+  JSON-Schema-subset validation runs before every provider execution and
+  rejected both a `%SpectreLens.TabRef{}` passed to `look` (a struct is not a
+  JSON object) and the atom export types `export` already normalizes.
+- Bounded the options an Action may carry. `opts` was previously merged into
+  the operation verbatim, so any caller able to plan an Action could override
+  the installation's `network_policy`.
+- Built the Run conformance fixture through `Spectre.Runtime.admit/3` so it
+  carries the start continuation that Run checkpoint schema 3 requires.
+- Ran `mix ci` in `:test`; the alias invokes `mix test`, which refuses to start
+  in `:dev`.
 - Compiled the Stack contract and its Agent binding in one test boundary so
   integrity validation is stable on GitHub Actions' Elixir 1.19/OTP 28 runner.
 - Removed ExDoc and the documentation CI job; this GitHub-only distribution

@@ -935,7 +935,14 @@ defmodule SpectreLens.BrowserRuntimeTest do
            ]
 
     open = Action.new(:open, via: :lens, args: %{"url" => "https://example.test"})
-    assert {:ok, %TabRef{} = ref} = ActionProvider.execute(open, context, config: config)
+
+    # `:open` yields the JSON projection of the reference, not the struct: it is
+    # the value later Actions carry back across Spectre's schema boundary.
+    assert {:ok, %{"id" => _, "instance_id" => 1} = ref} =
+             ActionProvider.execute(open, context, config: config)
+
+    refute is_struct(ref)
+    assert {:ok, %TabRef{}} = TabRef.from_map(ref)
     assert ActionProvider.schema_hash(open, config: config) == Enum.at(specs, 0).schema_hash
 
     assert nil ==
@@ -944,7 +951,11 @@ defmodule SpectreLens.BrowserRuntimeTest do
                config: config
              )
 
-    look = Action.new(:look, via: :lens, args: %{tab: ref, opts: [include: [:markdown]]})
+    look =
+      Action.new(:look,
+        via: :lens,
+        args: %{"tab" => ref, "opts" => %{"include" => ["markdown"]}}
+      )
 
     assert {:ok, %SpectreLens.View{markdown: "# Fake page"}} =
              ActionProvider.execute(look, context, config: config)
@@ -954,7 +965,7 @@ defmodule SpectreLens.BrowserRuntimeTest do
         via: :lens,
         args: %{
           "url" => "https://example.test/temporary",
-          "opts" => [:not_a_keyword]
+          "opts" => %{"timeout" => 500}
         }
       )
 
@@ -968,9 +979,9 @@ defmodule SpectreLens.BrowserRuntimeTest do
       Action.new(:discover,
         via: :lens,
         args: %{
-          url: "https://example.test",
-          goal: "docs",
-          opts: [max_pages: 1, max_candidates: 2]
+          "url" => "https://example.test",
+          "goal" => "docs",
+          "opts" => %{"max_pages" => 1, "max_candidates" => 2}
         }
       )
 
@@ -980,7 +991,11 @@ defmodule SpectreLens.BrowserRuntimeTest do
     act =
       Action.new(:act,
         via: :lens,
-        args: %{"tab" => ref, "action" => {:click, "#save"}, "opts" => [timeout: 25]}
+        args: %{
+          "tab" => ref,
+          "action" => %{"type" => "click", "ref" => "#save"},
+          "opts" => %{"timeout" => 25}
+        }
       )
 
     assert {:ok, :ok} = ActionProvider.execute(act, context, config: config)
@@ -989,17 +1004,143 @@ defmodule SpectreLens.BrowserRuntimeTest do
     assert click_opts[:include] == [:markdown]
     assert click_opts[:timeout] == 25
 
+    # Callers addressing the provider directly may still hand over the native
+    # reference and action tuple that `SpectreLens.act/3` itself accepts.
+    native =
+      Action.new(:act,
+        via: :lens,
+        args: %{tab: elem(TabRef.from_map(ref), 1), action: {:click, "#native"}}
+      )
+
+    assert {:ok, :ok} = ActionProvider.execute(native, context, config: config)
+    assert_receive {:fake_clicked, _id, "#native", _opts}
+
+    fill =
+      Action.new(:act,
+        via: :lens,
+        args: %{
+          "tab" => ref,
+          "action" => %{"type" => "fill", "ref" => "#name", "value" => "Ada"}
+        }
+      )
+
+    assert {:ok, :ok} = ActionProvider.execute(fill, context, config: config)
+    assert_receive {:fake_filled, _id, "#name", "Ada", _fill_opts}
+
+    submit =
+      Action.new(:act,
+        via: :lens,
+        args: %{
+          "tab" => ref,
+          "action" => %{
+            "type" => "submit",
+            "form" => "#search",
+            "fields" => [%{"name" => "q", "value" => "lens"}]
+          }
+        }
+      )
+
+    assert {:ok, :ok} = ActionProvider.execute(submit, context, config: config)
+    assert_receive {:fake_submitted, _id, "#search", %{"q" => "lens"}, _submit_opts}
+
     for {type, expected} <- [
           {:screenshot, "png"},
           {"html", "<html><body>Fake page</body></html>"},
           {"markdown", "# Fake page"},
           {"pdf", "pdf"}
         ] do
-      export = Action.new(:export, via: :lens, args: %{tab: ref, type: type})
+      export = Action.new(:export, via: :lens, args: %{"tab" => ref, "type" => type})
       assert {:ok, ^expected} = ActionProvider.execute(export, context, config: config)
     end
 
-    assert {:ok, tab} = SpectreLens.resolve_tab(runtime, ref)
+    assert {:ok, native_ref} = TabRef.from_map(ref)
+    assert {:ok, tab} = SpectreLens.resolve_tab(runtime, native_ref)
+    assert :ok = SpectreLens.close_tab(tab)
+    assert :ok = SpectreLens.close(runtime)
+  end
+
+  test "Lens action arguments reject options and shapes outside the declared allowlist" do
+    alias Spectre.Action
+    alias Spectre.Context
+    alias Spectre.Lens.ActionProvider
+    alias SpectreLens.StackContractAgent
+
+    assert {:ok, runtime} =
+             SpectreLens.open(
+               backend: FakeBackend,
+               protocol: FakeProtocol,
+               test_pid: self(),
+               network_policy: :any
+             )
+
+    config = %{options: [], backend: nil, policy: nil}
+
+    context = %Context{
+      agent: StackContractAgent,
+      opts: [lens_runtime: runtime, lens_opts: [network_policy: :any]]
+    }
+
+    assert {:ok, tab} = SpectreLens.new_tab(runtime, tab_id: "allowlist")
+    assert {:ok, ref} = TabRef.new(tab)
+    assert {:ok, portable} = TabRef.to_map(ref)
+
+    assert {:error, {:invalid_lens_opts, :nope}} =
+             ActionProvider.execute(
+               Action.new(:look, via: :lens, args: %{"tab" => portable, "opts" => :nope}),
+               context,
+               config: config
+             )
+
+    assert {:error, {:unsupported_lens_include, "cookies"}} =
+             ActionProvider.execute(
+               Action.new(:look,
+                 via: :lens,
+                 args: %{"tab" => portable, "opts" => %{"include" => ["cookies"]}}
+               ),
+               context,
+               config: config
+             )
+
+    # Through Spectre the declared schema rejects this key outright; reaching
+    # the provider directly it is dropped rather than forwarded. Either way a
+    # planned Action cannot reopen the network policy the installation set.
+    assert {:ok, %SpectreLens.View{}} =
+             ActionProvider.execute(
+               Action.new(:look,
+                 via: :lens,
+                 args: %{"tab" => portable, "opts" => %{"network_policy" => "any"}}
+               ),
+               context,
+               config: config
+             )
+
+    assert {:error, {:unsupported_lens_action_type, "evaluate"}} =
+             ActionProvider.execute(
+               Action.new(:act,
+                 via: :lens,
+                 args: %{"tab" => portable, "action" => %{"type" => "evaluate"}}
+               ),
+               context,
+               config: config
+             )
+
+    assert {:error, {:invalid_lens_action_request, "click"}} =
+             ActionProvider.execute(
+               Action.new(:act, via: :lens, args: %{"tab" => portable, "action" => "click"}),
+               context,
+               config: config
+             )
+
+    assert {:error, {:invalid_lens_tab_instance_id, nil}} =
+             ActionProvider.execute(
+               Action.new(:export,
+                 via: :lens,
+                 args: %{"tab" => %{"id" => "x"}, "type" => "markdown"}
+               ),
+               context,
+               config: config
+             )
+
     assert :ok = SpectreLens.close_tab(tab)
     assert :ok = SpectreLens.close(runtime)
   end
@@ -1072,7 +1213,8 @@ defmodule SpectreLens.BrowserRuntimeTest do
 
       action = Action.new(:open, via: :lens, args: %{url: "https://example.test"})
       assert {:ok, ref} = ActionProvider.execute(action, context, config: config)
-      assert {:ok, tab} = SpectreLens.resolve_tab(runtime, ref)
+      assert {:ok, native_ref} = TabRef.from_map(ref)
+      assert {:ok, tab} = SpectreLens.resolve_tab(runtime, native_ref)
       assert :ok = SpectreLens.close_tab(tab)
     end
 
@@ -1090,7 +1232,7 @@ defmodule SpectreLens.BrowserRuntimeTest do
                config: base_config
              )
 
-    assert {:error, {:invalid_lens_tab, :bad}} =
+    assert {:error, {:invalid_lens_tab_ref, :bad}} =
              ActionProvider.execute(
                Action.new(:look, via: :lens, args: %{tab: :bad}),
                context,

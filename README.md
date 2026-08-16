@@ -38,7 +38,7 @@ developing:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.0"},
+    {:spectre, "~> 0.3.2"},
     {:spectre_lens, github: "elchemista/spectre_lens", branch: "main"}
   ]
 end
@@ -103,6 +103,20 @@ Selecting the Stack automatically binds Lens configuration and its real
 are deterministic-only by default; `planner_exposure:` opts selected operations
 into model planning. A second `use Spectre.Lens` is not required.
 
+Lens declares closed argument schemas for every operation, so `mix spectre.doctor`
+reports `agent.planner_action_schema` as bounded. Approval is the Agent's to
+declare, not the package's: pair any planner exposure with a protection so a
+model-planned browser action still passes your policy.
+
+```elixir
+defmodule MyApp.Agent do
+  use Spectre.Agent, stack: MyApp.AI
+
+  protect {:lens, :look}, with: MyApp.BrowsingApproval
+  protect {:lens, :discover}, with: MyApp.BrowsingApproval
+end
+```
+
 Browser processes are isolated caller-owned Stack resources. Start the runtime
 explicitly so binary paths and other runtime-only values never enter the
 compiled definition:
@@ -125,11 +139,35 @@ effect lifecycle; the declared Lens policy is checked again at the browser
 boundary. Journal records contain operation/outcome metadata but never CDP
 payloads, HTML, cookies, screenshots, or credentials.
 
-The `:open` Action returns a portable `%SpectreLens.TabRef{}`. Subsequent
-`:look`, `:act`, and `:export` Actions accept that reference and resolve the
-live `%SpectreLens.Tab{}` from the explicitly supplied runtime. Connection and
-request-guard PIDs therefore never enter Spectre State or a checkpointed
-`Spectre.Run`.
+Action arguments are plain JSON, because Spectre validates them against a
+bounded JSON-Schema subset before dispatch. The `:open` Action returns the
+portable tab projection `SpectreLens.TabRef.to_map/1` produces; `:look`,
+`:act`, and `:export` accept it back and resolve the live `%SpectreLens.Tab{}`
+from the explicitly supplied runtime. Connection and request-guard PIDs
+therefore never enter Spectre State or a checkpointed `Spectre.Run`.
+
+```elixir
+{:ok, tab} = # result of the :open Action
+  # %{"id" => "…", "instance_id" => 1, "target_id" => "…", …}
+
+Spectre.Action.new(:act,
+  via: :lens,
+  args: %{
+    "tab" => tab,
+    "action" => %{"type" => "click", "text" => "Sign in"},
+    "opts" => %{"timeout" => 5_000}
+  }
+)
+```
+
+A browser action is an object with a `"type"` of `navigate`, `click`, `fill`,
+`submit`, or `scroll` plus the target keys it needs (`ref`, `href`, `text`,
+`name`, `label`, `title`, `value`, `form`, `fields`, `selector`, `x`, `y`, and
+`url` for `navigate`). `opts` is restricted to `timeout`, `max_depth`,
+`max_pages`, `max_links_per_page`, `max_candidates`, and `include`; runtime
+controls such as `network_policy` belong to the installation and cannot be
+widened by a planned Action. The native `%SpectreLens.TabRef{}` and
+`{:click, ref}` forms remain the contract of the `SpectreLens` API itself.
 
 ### Agent Instance boundary
 

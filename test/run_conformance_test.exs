@@ -14,6 +14,7 @@ defmodule SpectreLens.RunConformanceTest do
   alias Spectre.Instance
   alias Spectre.Lens.ActionProvider
   alias Spectre.Run
+  alias Spectre.Runtime
   alias Spectre.State
   alias Spectre.State.Codec
   alias SpectreLens.StackContractAgent
@@ -39,12 +40,12 @@ defmodule SpectreLens.RunConformanceTest do
       |> Effect.stage_action(StackContractAgent, :agent)
       |> Effect.complete(ref)
 
-    portable_run =
-      Run.new(
-        StackContractAgent,
-        Input.new("open"),
-        %State{planned_effects: [portable_effect]}
-      )
+    assert {:ok, portable_run} =
+             Runtime.admit(
+               StackContractAgent,
+               Input.new("open"),
+               %State{planned_effects: [portable_effect]}
+             )
 
     assert {:ok, checkpoint} = Run.checkpoint(portable_run)
     assert {:ok, restored} = Run.restore(checkpoint)

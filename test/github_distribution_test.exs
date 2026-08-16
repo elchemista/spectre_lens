@@ -14,7 +14,8 @@ defmodule SpectreLens.GitHubDistributionTest do
           opts
 
         _unset ->
-          assert {:spectre, "~> 0.3.0", opts} = dependency
+          assert {:spectre, requirement, opts} = dependency
+          assert Version.match?("0.3.2", requirement)
           refute Keyword.has_key?(opts, :path)
           opts
       end

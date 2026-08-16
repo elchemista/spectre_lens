@@ -22,6 +22,9 @@ defmodule SpectreLens.MixProject do
     ]
   end
 
+  # `ci` runs `test`, which refuses to start outside :test.
+  def cli, do: [preferred_envs: [ci: :test]]
+
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_env), do: ["lib"]
 
@@ -50,7 +53,7 @@ defmodule SpectreLens.MixProject do
         {:spectre, path: Path.expand(path, __DIR__), only: :test, override: true}
 
       _unset ->
-        {:spectre, "~> 0.3.0", only: :test}
+        {:spectre, "~> 0.3.2", only: :test}
     end
   end
 
