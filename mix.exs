@@ -33,7 +33,7 @@ defmodule SpectreLens.MixProject do
 
   defp deps do
     [
-      {:spectre, "~> 0.3.0", only: :test},
+      spectre_dep(),
       {:jason, "~> 1.4.5"},
       {:req, "~> 0.7.1"},
       {:websockex, "~> 0.5.1"},
@@ -42,6 +42,16 @@ defmodule SpectreLens.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  defp spectre_dep do
+    case System.get_env("SPECTRE_PATH") do
+      path when is_binary(path) and path != "" ->
+        {:spectre, path: Path.expand(path, __DIR__), only: :test, override: true}
+
+      _unset ->
+        {:spectre, "~> 0.3.0", only: :test}
+    end
   end
 
   defp aliases do
