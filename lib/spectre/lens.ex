@@ -16,7 +16,7 @@ defmodule Spectre.Lens do
   owning a second compiler.
   """
 
-  @version "0.3.0"
+  @version "0.1.0"
   @spectre_definition Module.concat(["Spectre", "Definition"])
   @spectre_extension Module.concat(["Spectre", "Extension"])
   @spectre_stack Module.concat(["Spectre", "Stack"])
