@@ -38,7 +38,7 @@ developing:
 ```elixir
 def deps do
   [
-    {:spectre, "~> 0.3.2"},
+    {:spectre, "~> 0.3.3"},
     {:spectre_lens, github: "elchemista/spectre_lens", branch: "main"}
   ]
 end
