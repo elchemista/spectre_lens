@@ -808,3 +808,26 @@ Credits and thanks:
   around small Elixir CDP primitives.
 - [Lightpanda](https://lightpanda.io/) for the browser and its agent-friendly
   `LP.*` capabilities.
+
+## Spectre 0.4 Server tools
+
+The optional Stack facade declares `tools/1` without adding a runtime dependency
+on Spectre. `use Spectre.Server, tools: MyApp.AI` generates `lens/3` from the
+installation. Supported inputs are `{:open, url}`, `{:look, url_or_tab_ref}`,
+`{:close, tab_ref}` and, when installed with `bind: [act: :browser_action]`,
+`{:act, tab_ref, action_map}`. The latter always becomes a GAM proposal: every
+allowed browser action, including navigation and submit, requires the configured
+host binding and executor. The action map uses the existing provider's closed
+JSON schema. Request data cannot choose a runtime, executor or policy.
+
+The host starts `Spectre.Stack.Runtime` and passes `stack_runtime:` to the
+Server. Returned tab references are plain logical maps; live tabs remain under
+Lens supervision. Open and close are not blindly retried after uncertainty.
+Call close for released tabs and configure host cleanup/leases for abandoned or
+uncertain opens. Read results retain `trust: :untrusted` and an escaped agent
+context; page content never becomes user consent or trusted instructions.
+
+Inside an admitted GAM executor, call
+`Spectre.Lens.ServerTool.execute(:act, args, service_context)` and record its
+projected result before attesting the Outcome. Standalone Lens APIs are unchanged.
+Run `SPECTRE_PATH=../spectre mix test` against the core 0.4 working branch.

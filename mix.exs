@@ -53,7 +53,7 @@ defmodule SpectreLens.MixProject do
         {:spectre, path: Path.expand(path, __DIR__), only: :test, override: true}
 
       _unset ->
-        {:spectre, "~> 0.3.3", only: :test}
+        {:spectre, "~> 0.4.0", only: :test}
     end
   end
 

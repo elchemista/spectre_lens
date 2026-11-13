@@ -42,7 +42,7 @@ defmodule Spectre.Lens do
       module: __MODULE__,
       version: @version,
       contract: 1,
-      spectre: "~> 0.3.3",
+      spectre: "~> 0.4.0",
       provides: [{:service, :lens}],
       actions: [
         {:lens, :open},
@@ -95,6 +95,42 @@ defmodule Spectre.Lens do
       )
 
     [{{:lens, :runtime}, child_spec}]
+  end
+
+  @doc "Declares generated Server helpers without starting browser resources."
+  def tools(config) do
+    bindings = config |> Map.get(:options, []) |> Keyword.get(:bind, [])
+
+    unless Keyword.keyword?(bindings) and Keyword.keys(bindings) -- [:act] == [],
+      do: raise(ArgumentError, "Lens bind accepts only act: host_operation")
+
+    operations = %{
+      open: %{path: :cognitive, retry: :never, max_bytes: 1_048_576},
+      look: %{path: :cognitive, retry: :safe, max_bytes: 1_048_576},
+      close: %{path: :cognitive, retry: :never, max_bytes: 1_048_576}
+    }
+
+    operations =
+      case Keyword.fetch(bindings, :act) do
+        :error ->
+          operations
+
+        {:ok, operation} ->
+          Map.put(operations, :act, %{
+            path: :governed,
+            operation: operation,
+            max_bytes: 1_048_576
+          })
+      end
+
+    %{
+      lens: %{
+        contract: 1,
+        adapter: Spectre.Lens.ServerTool,
+        default: nil,
+        operations: operations
+      }
+    }
   end
 
   defmacro __using__(opts) do

@@ -19,7 +19,7 @@ defmodule SpectreLens.StackContractTest do
     assert {:ok, package} = V1.verify_installable(Spectre.Lens)
     assert package.id == :lens
     assert package.version == "0.1.0"
-    assert package.spectre == "~> 0.3.3"
+    assert package.spectre == "~> 0.4.0"
     assert package.provides == [{:service, :lens}]
     assert package.operations == []
 
