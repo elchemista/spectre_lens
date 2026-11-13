@@ -4,6 +4,64 @@ defmodule Spectre.Lens.ServerToolTest do
   alias Spectre.Lens.ServerTool
   alias SpectreLens.{ActionRef, TabRef, View}
 
+  defmodule BrowserProtocol do
+    use SpectreLens.Protocol.Adapter
+
+    def new_tab(instance, opts) do
+      {:ok,
+       %SpectreLens.Tab{
+         id: "tool-tab",
+         instance_id: instance.id,
+         protocol: __MODULE__,
+         handle: %{owner: instance.owner},
+         url_policy: SpectreLens.URLPolicy.take_options(opts)
+       }}
+    end
+
+    def navigate(_tab, _url, _opts), do: :ok
+
+    def click(tab, ref, _opts) do
+      send(tab.handle.owner, {:browser_clicked, tab.id, ref})
+      :ok
+    end
+
+    def close_tab(tab) do
+      send(tab.handle.owner, {:browser_closed, tab.id})
+      if is_pid(tab.runtime), do: SpectreLens.Runtime.release_tab(tab.runtime, tab)
+      :ok
+    end
+  end
+
+  defmodule Browser do
+    @behaviour SpectreLens.Browser
+    def default_protocol, do: BrowserProtocol
+
+    def start_instance(index, opts),
+      do:
+        {:ok,
+         %SpectreLens.Browser.Instance{
+           id: index,
+           backend: __MODULE__,
+           protocol: BrowserProtocol,
+           owner: opts[:test_pid]
+         }}
+
+    def stop_instance(_instance), do: :ok
+    def max_tabs(_instance, _opts), do: 1
+  end
+
+  defmodule Stack do
+    use Spectre.Stack
+
+    install Spectre.Lens, bind: [act: :browser_action] do
+      backend(Browser, instances: 1)
+    end
+  end
+
+  defmodule Agent do
+    use Spectre.Agent, stack: Stack
+  end
+
   @config %{options: [], backend: nil, policy: nil}
 
   test "all action types use the same explicit governed binding" do
@@ -52,5 +110,52 @@ defmodule Spectre.Lens.ServerToolTest do
     assert is_binary(result.context)
     assert {:ok, _} = Spectre.GAM.Canonical.Value.encode(result)
     assert {:error, :nonportable_lens_result} = ServerTool.project(:open, {:ok, %{tab: self()}})
+  end
+
+  test "executor adapter acts once through the real provider and close releases the resource" do
+    runtime =
+      start_supervised!(
+        {Spectre.Stack.Runtime, stack: Stack, packages: [lens: [test_pid: self()]]}
+      )
+
+    context = %{
+      agent: Agent,
+      options: [stack_runtime: runtime, lens_opts: [network_policy: :any]]
+    }
+
+    {:ok, config} = Spectre.Lens.config(Agent)
+    tool_context = %{service_context: context, config: config}
+    assert {:ok, tab} = ServerTool.invoke(:open, %{"url" => "https://example.test"}, tool_context)
+    assert {:ok, ref} = TabRef.from_map(tab)
+    assert {:ok, browser_runtime} = Spectre.Lens.runtime(Agent, context.options)
+    assert {:ok, _live_tab} = SpectreLens.resolve_tab(browser_runtime, ref)
+
+    assert {:ok, args} =
+             ServerTool.prepare(:act, [tab, %{"type" => "click", "ref" => "#save"}], %{
+               config: config
+             })
+
+    refute_received {:browser_clicked, _, _}
+    assert {:ok, :ok} = ServerTool.execute(:act, args, context)
+    assert_receive {:browser_clicked, "tool-tab", "#save"}
+    refute_received {:browser_clicked, _, _}
+
+    assert {:error, _} =
+             ServerTool.execute(
+               :act,
+               %{"tab" => tab, "action" => %{"type" => "execute_javascript"}},
+               context
+             )
+
+    refute_received {:browser_clicked, _, _}
+
+    assert {:ok, close_args} = ServerTool.prepare(:close, [tab], %{config: config})
+    assert {:ok, %{closed: true}} = ServerTool.invoke(:close, close_args, tool_context)
+    assert_receive {:browser_closed, "tool-tab"}
+    # Synchronize the runtime after the protocol's release cast.
+    :sys.get_state(browser_runtime)
+    assert {:error, _} = SpectreLens.resolve_tab(browser_runtime, ref)
+    assert {:error, _} = ServerTool.invoke(:close, close_args, tool_context)
+    refute_received {:browser_closed, _}
   end
 end
