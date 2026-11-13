@@ -6,6 +6,12 @@ defmodule SpectreLens do
   semantic structure, interactive elements, forms, links, structured data and
   action references. Local Lightpanda and remote CDP are runtime adapters, not
   the library's public semantic contract.
+
+  This is the immediate standalone browser API. In a Spectre core 0.4
+  AgentServer, install `Spectre.Lens` in the Stack and use the generated
+  `lens/3` helper. The Server receives portable results, while browser handles
+  stay in the named Stack runtime. Bound browser actions require host GAM
+  admission before execution.
   """
 
   alias SpectreLens.{

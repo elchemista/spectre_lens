@@ -1,19 +1,29 @@
 defmodule Spectre.Lens do
   @moduledoc """
-  Optional, late-bound Spectre Stack facade for the standalone `SpectreLens`
-  perception library.
+  Stack integration for browser perception in Spectre core 0.4.
 
-  Lens owns its package-local `backend` and `policy` declarations:
+  Install Lens in a Stack and declare `use Spectre.Server, tools: MyApp.AI`
+  on the Agent's Server. The installation's `tools/1` descriptor generates
+  the private `lens/3` helper; it is not imported from this module.
 
-      install Spectre.Lens do
+      install Spectre.Lens, bind: [act: :browser_action] do
         backend MyApp.BrowserBackend, instances: 2
-        policy MyApp.WebPolicy
       end
 
-  This module compiles without Spectre. When Spectre is present, configuration
-  stays immutable and browser processes are isolated under an explicitly
-  started `Spectre.Stack.Runtime`; Agents receive the provider binding without
-  owning a second compiler.
+  Start a named `Spectre.Stack.Runtime` for browser resources and pass its
+  name through the Server's `stack_runtime` option. Open, look, and close
+  complete asynchronously through `handle_result/3` with portable values;
+  page content is untrusted evidence. Open and close are not blindly retried
+  after an uncertain result. Hosts must enforce tab ownership and cleanup.
+
+  Binding `:act` declares the host operation to propose; it does not grant
+  authority. The host's admitted executor calls `Spectre.Lens.ServerTool.execute/3`
+  after GAM accepts the candidate. Network and disclosure restrictions remain
+  host responsibilities, including for default cognitive operations.
+
+  This facade compiles without Spectre; the direct `SpectreLens` browser API
+  remains available for standalone applications. See the README, migration
+  guide, and [Governed Act Model](https://spectre.guide/en/governed-act-model).
   """
 
   @version "0.1.0"

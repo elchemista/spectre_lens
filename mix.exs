@@ -16,6 +16,20 @@ defmodule SpectreLens.MixProject do
       deps: deps(),
       aliases: aliases(),
       description: description(),
+      docs: [
+        main: "readme",
+        source_ref: "feature/stack-tools-0.4",
+        extras: [
+          "README.md",
+          "docs/INDEX.md",
+          "docs/MIGRATING_TO_SPECTRE_0_4.md",
+          "docs/LEGACY_0_3.md",
+          "docs/STANDALONE.md",
+          "docs/PUBLIC_API.md",
+          "CHANGELOG.md",
+          "LICENSE"
+        ]
+      ],
       dialyzer: dialyzer(),
       source_url: @source_url,
       homepage_url: @source_url
@@ -42,6 +56,7 @@ defmodule SpectreLens.MixProject do
       {:websockex, "~> 0.5.1"},
       {:erlexec, "~> 2.3.4"},
       {:telemetry, "~> 1.4"},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]

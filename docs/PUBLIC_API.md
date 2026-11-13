@@ -1,15 +1,16 @@
 # Spectre Lens public API — 0.1.0
 
 This file is the normative public API manifest for Spectre Lens `0.1.0`. Its
-package and Stack contracts target Spectre `0.3.3`. Compatibility guarantees
+package and Stack contracts target unreleased Spectre core `~> 0.4.0`. Compatibility guarantees
 apply only to the
 modules and callables listed below. Any module, function, macro, or callback
 not listed here is an implementation detail even when it is exported or
 visible in generated docs.
 
 The Spectre-facing modules are late-bound compatibility adapters. `:spectre`
-is not a compile-time or runtime dependency of Spectre Lens; its Hex package is
-resolved only in this repository's test environment.
+is not a compile-time or runtime dependency of Spectre Lens; the core dependency is
+used only in this repository's test environment. For this unreleased integration,
+resolve the compatible core checkout with `SPECTRE_PATH`, as shown in the README.
 
 Default arguments are expanded into every callable arity. For the listed
 modules, documented types, opaque types, and documented struct fields are also
@@ -21,7 +22,9 @@ type, and struct contract.
 - `Mix.Tasks.Spectre.Lens.Doctor`
 - `Mix.Tasks.Spectre.Lens.Install`
 - `Spectre.Lens`
-  - functions: `config/1`, `runtime/1`, `runtime/2`
+  - functions: `tools/1`, `config/1`, `runtime/1`, `runtime/2`
+- `Spectre.Lens.ServerTool`
+  - functions: `execute/3` (host executor only, after GAM admission)
 - `Spectre.Lens.ActionProvider`
 - `SpectreLens`
   - functions: `act/2`, `act/3`, `agent_context/1`, `agent_context/2`, `cdp/2`, `cdp/3`, `cdp/4`, `close/1`, `close_tab/1`, `command/2`, `command/3`, `command/4`, `delete_session/2`, `discover/1`, `discover/2`, `doctor/0`, `doctor/1`, `explain_error/1`, `export/2`, `export/3`, `export_session/2`, `get_session/2`, `import_session/3`, `llms/1`, `llms/2`, `llms_context/1`, `llms_context/2`, `look/1`, `look/2`, `new_tab/1`, `new_tab/2`, `open/0`, `open/1`, `outline/1`, `outline/2`, `put_session/3`, `resolve_tab/2`, `runtime_info/1`, `save_session/1`, `save_session/2`, `save_session/3`, `stop_watch/1`, `unfocus/1`, `unfocus/2`, `version/0`, `watch/1`, `watch/2`, `zoom_in/2`, `zoom_in/3`, `zoom_out/1`, `zoom_out/2`
@@ -117,3 +120,10 @@ type, and struct contract.
 - `SpectreLens.View`
 - `SpectreLens.Watcher`
   - functions: `start/1`, `start/2`, `stop/1`
+
+## Core 0.4 Server tools
+
+The Stack Installable `tools/1` descriptor and generated Server helpers are
+documented in the [migration guide](MIGRATING_TO_SPECTRE_0_4.md). Native direct
+APIs keep their existing contracts; helper results are explicitly projected
+for durable Server use. See the [documentation index](INDEX.md).

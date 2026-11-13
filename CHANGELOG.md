@@ -2,7 +2,18 @@
 
 All notable changes to Spectre Lens are documented in this file.
 
-## [Unreleased]
+## [Unreleased — Spectre core 0.4 integration]
+
+- Target the unreleased core 0.4 Stack contract on `feature/stack-tools-0.4`;
+  satellite package versions remain independent.
+- Register generated Server helpers through `tools/1`, with portable results,
+  explicit cognitive scheduling and host-bound governed effects.
+- Rewrite the README around Stack → Agent → Server, add the 0.3 migration guide
+  and documentation index, and scope the previous Instance examples as legacy.
+- Retain native/direct APIs; installation does not grant authority or consent.
+
+
+## Earlier development notes (before the core 0.4 integration)
 
 ### Changed
 
