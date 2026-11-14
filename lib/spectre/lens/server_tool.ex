@@ -2,7 +2,7 @@ defmodule Spectre.Lens.ServerTool do
   @moduledoc """
   Spectre 0.4 tool boundary for supervised Lens browser resources.
 
-  All browser actions are governed. Opening a tab is non-repeatable after an
+  Browser interactions through `:act` are governed. Opening a tab is non-repeatable after an
   uncertain result; look is repeatable. Close explicitly releases a known tab.
   Hosts must also configure browser leases/cleanup for abandoned or uncertain
   opens. No live Tab or connection handle crosses the Server checkpoint.
@@ -12,6 +12,27 @@ defmodule Spectre.Lens.ServerTool do
   alias SpectreLens.{TabRef, View}
 
   @schema Module.concat(["Spectre", "Action", "Schema"])
+
+  if Code.ensure_loaded?(Spectre.Server.GAM.EffectAdapter) do
+    @behaviour Spectre.Server.GAM.EffectAdapter
+  end
+
+  @doc "Runs a registered browser action after admission, without retry."
+  @spec execute_effect(:act, map(), map()) ::
+          {:ok, term()} | {:error, :definitive_no_effect | :ambiguous, term()}
+  def execute_effect(:act, args, context) do
+    with {:ok, config} <- Spectre.Lens.config(context.agent),
+         {:ok, _} <- validate(:act, args, config) do
+      case execute(:act, args, context) do
+        {:ok, receipt} -> {:ok, receipt}
+        {:error, reason} -> {:error, :ambiguous, reason}
+      end
+    else
+      {:error, reason} -> {:error, :definitive_no_effect, reason}
+    end
+  end
+
+  def execute_effect(_, _, _), do: {:error, :definitive_no_effect, :invalid_lens_effect}
 
   def prepare(:open, [url], trusted) when is_binary(url),
     do: validate(:open, %{"url" => url}, trusted.config)

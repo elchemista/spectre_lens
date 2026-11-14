@@ -11,6 +11,10 @@ All notable changes to Spectre Lens are documented in this file.
 - Rewrite the README around Stack → Agent → Server, add the 0.3 migration guide
   and documentation index, and scope the previous Instance examples as legacy.
 - Retain native/direct APIs; installation does not grant authority or consent.
+- Close browser resources when the owning caller or Stack supervisor exits.
+  The safe-start link previously swallowed supervisor shutdown, so forced
+  termination skipped cleanup and left Lightpanda processes running. Cover both
+  normal caller exit and supervised shutdown, including real Lightpanda processes.
 
 
 ## Earlier development notes (before the core 0.4 integration)

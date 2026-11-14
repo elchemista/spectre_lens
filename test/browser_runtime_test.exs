@@ -336,6 +336,44 @@ defmodule SpectreLens.BrowserRuntimeTest do
     def authorize(_operation, _args, opts), do: Keyword.fetch!(opts, :reply)
   end
 
+  test "supervisor shutdown closes owned browser resources instead of killing the runtime" do
+    runtime =
+      start_supervised!({Runtime, backend: FakeBackend, protocol: FakeProtocol, test_pid: self()})
+
+    monitor = Process.monitor(runtime)
+    assert {:ok, tab} = Runtime.new_tab(runtime, [])
+    assert :ok = stop_supervised(Runtime)
+    assert_receive {:fake_tab_stopped, 1, id}
+    assert id == tab.id
+    assert_receive {:fake_instance_stopped, 1}
+    assert_receive {:DOWN, ^monitor, :process, ^runtime, :shutdown}
+  end
+
+  test "a normally exiting caller releases its runtime and backend resources" do
+    observer = self()
+
+    owner =
+      start_supervised!(
+        {Task,
+         fn ->
+           {:ok, runtime} =
+             Runtime.start_link(backend: FakeBackend, protocol: FakeProtocol, test_pid: observer)
+
+           send(observer, {:owned_runtime, runtime})
+
+           receive do
+             :finished -> :ok
+           end
+         end}
+      )
+
+    assert_receive {:owned_runtime, runtime}
+    monitor = Process.monitor(runtime)
+    send(owner, :finished)
+    assert_receive {:fake_instance_stopped, 1}
+    assert_receive {:DOWN, ^monitor, :process, ^runtime, :normal}
+  end
+
   test "runs without Lightpanda and reports the selected backend and protocol" do
     assert {:ok, runtime} =
              SpectreLens.open(

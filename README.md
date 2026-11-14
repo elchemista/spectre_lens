@@ -92,14 +92,15 @@ and durable tool arguments; the helper resolves them in its worker.
 | `{:open, url}` | `{:ok, tab_map}` | Cognitive; nonrepeatable allocation |
 | `{:look, tab_map}` or `{:look, url}` | `{:ok, view_map}` | Cognitive; repeatable observation |
 | `{:close, tab_map}` | `{:ok, %{closed: true}}` | Cognitive; nonrepeatable cleanup |
-| `{:act, tab_map, action_map}` | Core governed result | Requires explicit host binding |
+| `{:act, tab_map, action_map}` | Core governed result | Requires an allowed GAM operation |
 
 View data has `trust: :untrusted` and escaped `context`. Page content is data,
 not authority or instructions. Live Tabs, CDP connections and PIDs never enter
 the checkpoint. For browser effects, install with
-`bind: [act: :browser_action]`, configure that GAM host binding and call
+`bind: [act: :browser_action]`, configure
+`gam: [operations: %{browser_action: [confirm: true]}]` and call
 `lens(ctx, {:act, tab, %{"type" => "click", "ref" => "#save"}}, on_result: :acted)`.
-The admitted executor calls `Spectre.Lens.ServerTool.execute(:act, args, context)`.
+Spectre invokes Lens' registered effect adapter only after GAM commits the Act.
 All supported browser action types use that governed path.
 
 Opening or closing may finish even if its acknowledgement is lost. The Server
@@ -114,10 +115,12 @@ The [Governed Act Model manifesto](https://spectre.guide/en/governed-act-model)
 distinguishes evidence, bounded authority, admitted Acts and unresolved duties.
 An installed tool or a model proposal is not user consent. Spectre's default
 cognitive path can classify, select, observe and prepare proposals without
-requesting end-user permission for every computation. The host declares the
-governed surface and its bindings; protected disclosure or resource use can
-also belong to that surface. GAM records the governed lifecycle and gates the
-host executor. Uncertain effects require reconciliation, not a blind retry.
+requesting end-user permission for every computation. The application configures
+the governed operations and their bindings; protected disclosure or resource use
+can also belong to that surface. AgentServer automatically coordinates GAM and
+registered effect adapters, including consent when required. Root and Skill
+Servers share one Domain; no application GAM Host is needed. Uncertain effects
+require reconciliation, not a blind retry.
 
 ## Further reading
 
@@ -125,3 +128,40 @@ host executor. Uncertain effects require reconciliation, not a blind retry.
 - [Migration, schemas and host execution](docs/MIGRATING_TO_SPECTRE_0_4.md)
 - [Public API contract](docs/PUBLIC_API.md)
 - [Historical Instance/Action-provider integration](docs/LEGACY_0_3.md)
+
+## Use inside a reusable Skill
+
+The `lens` helper is generated in a Skill callback module with
+`use Spectre.Server, tools: MyApp.AI`, using the same installed Stack. A
+`Spectre.Skill` with `server:` has a separate GenServer, local assigns, workers,
+streams, pending intentions and checkpoint key.
+
+**It uses the root AgentServer's same automatic GAM integration, Domain and
+authority ledger.** Configure `gam:` once on the root. Mounting a Skill creates
+no new Domain or grant and needs no additional Host or consent ingress. Shared
+Stack resources stay in their existing supervised runtime.
+
+Agent and Skill workers can run concurrently; the shared kernel orders admission.
+A governed effect must be enabled in root `operations` and permitted by the
+mount's `governed:` references. Each Skill proposal records its mount and
+invocation provenance. Consent identifies the originating Skill and exact
+presentation: approving an email cannot approve another Skill's memory write.
+Timer closure is recorded in the same Domain and does not erase a Duty.
+Ordinary cognitive operations retain their configured provider boundary.
+
+See the [core Skill ownership and consent guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/SKILLS.md),
+[automatic GAM responsibilities](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/MANAGED_GAM.md)
+and [two-Skill LiveView showcase](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/DEMO.md).
+
+## Managed GAM execution registration
+
+The optional `c:Spectre.Stack.Installable.effects/1` callback registers immutable
+execution adapters for Spectre 0.4 managed GAM. Lens registers only the browser `act` operation selected by `bind:`. Open/look/close retain their existing tool contracts and resource cleanup requirements.
+
+The effect registration is included in the compiled installation digest and is
+checked again before execution. It grants no authority: the application enables
+operations and the GAM kernel admits each concrete consequence before the adapter
+runs. AgentServer owns GAM automatically in every environment. Native package
+APIs remain available outside the AgentServer loop; their caller owns that boundary.
+Adapters implement `execute_effect/3` and distinguish successful observations,
+definitive no-effect and uncertain outcomes; uncertain effects are not retried.

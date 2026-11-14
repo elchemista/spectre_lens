@@ -150,6 +150,30 @@ defmodule Spectre.Lens do
     end
   end
 
+  @doc "Registers bound browser actions for managed GAM execution."
+  @spec effects(map()) :: map()
+  def effects(config) do
+    config
+    |> tools()
+    |> get_in([:lens, :operations])
+    |> Enum.reduce(%{}, fn
+      {:act, %{path: :governed, operation: operation}}, effects ->
+        Map.put(effects, operation, %{
+          contract: 1,
+          adapter: Spectre.Lens.ServerTool,
+          operation: :act,
+          side_effect: :non_idempotent,
+          material: :arguments,
+          partition: [],
+          schema_hash: nil,
+          config: %{}
+        })
+
+      _, effects ->
+        effects
+    end)
+  end
+
   @doc """
   Returns the immutable Lens installation bound to an Agent.
   """

@@ -140,6 +140,22 @@ defmodule SpectreLensIntegrationTest do
   end
 
   @tag capture_log: true
+  test "supervisor shutdown stops both real Lightpanda processes" do
+    runtime = start_supervised!({SpectreLens.Runtime, instances: 2})
+
+    monitors =
+      for instance <- :sys.get_state(runtime).instances do
+        {pid, _os_pid} = instance.owner.process
+        {pid, Process.monitor(pid)}
+      end
+
+    assert :ok = stop_supervised(SpectreLens.Runtime)
+
+    for {pid, monitor} <- monitors do
+      assert_receive {:DOWN, ^monitor, :process, ^pid, _reason}, 5000
+    end
+  end
+
   test "a real Lightpanda process exit is propagated through the backend lifecycle" do
     assert {:ok, _path} = SpectreLens.Lightpanda.detect()
     previous = Process.flag(:trap_exit, true)

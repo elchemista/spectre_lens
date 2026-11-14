@@ -4,6 +4,14 @@ defmodule Spectre.Lens.ServerToolTest do
   alias Spectre.Lens.ServerTool
   alias SpectreLens.{ActionRef, TabRef, View}
 
+  test "managed catalog exposes only bound act and does not promote browser reads" do
+    assert %{} = Spectre.Lens.effects(%{options: []})
+    effects = Spectre.Lens.effects(%{options: [bind: [act: :browser_action]]})
+    assert %{browser_action: %{adapter: ServerTool, operation: :act}} = effects
+    assert map_size(effects) == 1
+    assert Spectre.Stack.Effects.validate!(effects) == effects
+  end
+
   defmodule BrowserProtocol do
     use SpectreLens.Protocol.Adapter
 
