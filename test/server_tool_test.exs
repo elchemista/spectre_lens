@@ -12,6 +12,28 @@ defmodule Spectre.Lens.ServerToolTest do
     assert Spectre.Stack.Effects.validate!(effects) == effects
   end
 
+  test "navigation bindings govern both URL entry points" do
+    config = %{options: [bind: [open: :browser_open, look: :browser_look, act: :browser_act]]}
+    tools = Spectre.Lens.tools(config)
+    assert tools.lens.operations.open.path == :governed
+    assert tools.lens.operations.look.path == :governed
+    assert tools.lens.operations.close.path == :cognitive
+    effects = Spectre.Lens.effects(config)
+    assert effects.browser_open.operation == :open
+    assert effects.browser_look.operation == :look
+    assert Spectre.Stack.Tools.validate!(tools) == tools
+    assert Spectre.Stack.Effects.validate!(effects) == effects
+
+    for bind <- [
+          [open: :open],
+          [look: :look],
+          [open: :same, look: :same],
+          [open: nil, look: :look]
+        ] do
+      assert_raise ArgumentError, fn -> Spectre.Lens.tools(%{options: [bind: bind]}) end
+    end
+  end
+
   defmodule BrowserProtocol do
     use SpectreLens.Protocol.Adapter
 
@@ -133,7 +155,10 @@ defmodule Spectre.Lens.ServerToolTest do
 
     {:ok, config} = Spectre.Lens.config(Agent)
     tool_context = %{service_context: context, config: config}
-    assert {:ok, tab} = ServerTool.invoke(:open, %{"url" => "https://example.test"}, tool_context)
+
+    assert {:ok, tab} =
+             ServerTool.execute_effect(:open, %{"url" => "https://example.test"}, context)
+
     assert {:ok, ref} = TabRef.from_map(tab)
     assert {:ok, browser_runtime} = Spectre.Lens.runtime(Agent, context.options)
     assert {:ok, _live_tab} = SpectreLens.resolve_tab(browser_runtime, ref)

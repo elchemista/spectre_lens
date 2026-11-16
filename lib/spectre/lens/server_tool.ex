@@ -2,7 +2,8 @@ defmodule Spectre.Lens.ServerTool do
   @moduledoc """
   Spectre 0.4 tool boundary for supervised Lens browser resources.
 
-  Browser interactions through `:act` are governed. Opening a tab is non-repeatable after an
+  Bound browser interactions through `:act`, `:open` and `:look` are governed.
+  Navigation bindings require both open and look. Opening a tab is non-repeatable after an
   uncertain result; look is repeatable. Close explicitly releases a known tab.
   Hosts must also configure browser leases/cleanup for abandoned or uncertain
   opens. No live Tab or connection handle crosses the Server checkpoint.
@@ -18,12 +19,12 @@ defmodule Spectre.Lens.ServerTool do
   end
 
   @doc "Runs a registered browser action after admission, without retry."
-  @spec execute_effect(:act, map(), map()) ::
+  @spec execute_effect(:act | :open | :look, map(), map()) ::
           {:ok, term()} | {:error, :definitive_no_effect | :ambiguous, term()}
-  def execute_effect(:act, args, context) do
+  def execute_effect(operation, args, context) when operation in [:act, :open, :look] do
     with {:ok, config} <- Spectre.Lens.config(context.agent),
-         {:ok, _} <- validate(:act, args, config) do
-      case execute(:act, args, context) do
+         {:ok, _} <- validate(operation, args, config) do
+      case execute(operation, args, context) do
         {:ok, receipt} -> {:ok, receipt}
         {:error, reason} -> {:error, :ambiguous, reason}
       end
@@ -70,11 +71,11 @@ defmodule Spectre.Lens.ServerTool do
   end
 
   @doc "Called only inside an admitted host GAM executor; projects before Outcome attestation."
-  def execute(:act, args, context) do
+  def execute(operation, args, context) when operation in [:act, :open, :look] do
     with {:ok, config} <- Spectre.Lens.config(context.agent),
-         {:ok, args} <- validate(:act, args, config),
-         raw <- invoke_provider(:act, args, context, config),
-         {:ok, projected} <- project(:act, raw) do
+         {:ok, args} <- validate(operation, args, config),
+         raw <- invoke_provider(operation, args, context, config),
+         {:ok, projected} <- project(operation, raw) do
       projected
     end
   end

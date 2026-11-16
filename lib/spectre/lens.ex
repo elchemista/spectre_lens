@@ -111,8 +111,18 @@ defmodule Spectre.Lens do
   def tools(config) do
     bindings = config |> Map.get(:options, []) |> Keyword.get(:bind, [])
 
-    unless Keyword.keyword?(bindings) and Keyword.keys(bindings) -- [:act] == [],
-      do: raise(ArgumentError, "Lens bind accepts only act: host_operation")
+    unless Keyword.keyword?(bindings) and Keyword.keys(bindings) -- [:open, :look, :act] == [] and
+             length(bindings) == length(Enum.uniq(Keyword.keys(bindings))) and
+             Enum.all?(bindings, fn {_, op} -> is_atom(op) and not is_nil(op) end) and
+             length(Keyword.values(bindings)) == length(Enum.uniq(Keyword.values(bindings))),
+           do:
+             raise(
+               ArgumentError,
+               "Lens bind accepts distinct open:, look: and act: host operations"
+             )
+
+    if Keyword.has_key?(bindings, :open) != Keyword.has_key?(bindings, :look),
+      do: raise(ArgumentError, "Lens navigation requires both open: and look: bindings")
 
     operations = %{
       open: %{path: :cognitive, retry: :never, max_bytes: 1_048_576},
@@ -121,17 +131,9 @@ defmodule Spectre.Lens do
     }
 
     operations =
-      case Keyword.fetch(bindings, :act) do
-        :error ->
-          operations
-
-        {:ok, operation} ->
-          Map.put(operations, :act, %{
-            path: :governed,
-            operation: operation,
-            max_bytes: 1_048_576
-          })
-      end
+      Enum.reduce(bindings, operations, fn {name, operation}, acc ->
+        Map.put(acc, name, %{path: :governed, operation: operation, max_bytes: 1_048_576})
+      end)
 
     %{
       lens: %{
@@ -157,11 +159,11 @@ defmodule Spectre.Lens do
     |> tools()
     |> get_in([:lens, :operations])
     |> Enum.reduce(%{}, fn
-      {:act, %{path: :governed, operation: operation}}, effects ->
+      {name, %{path: :governed, operation: operation}}, effects ->
         Map.put(effects, operation, %{
           contract: 1,
           adapter: Spectre.Lens.ServerTool,
-          operation: :act,
+          operation: name,
           side_effect: :non_idempotent,
           material: :arguments,
           partition: [],

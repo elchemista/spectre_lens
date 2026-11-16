@@ -22,28 +22,12 @@ Server semantics merely because the package is installed. Keep standalone
 workflows explicitly caller-owned. Historical examples remain in
 [the legacy guide](LEGACY_0_3.md).
 
-## Registration and callback lifecycle
+## Server callbacks
 
-The package's existing `Spectre.Stack.Installable` registration contributes
-`tools/1`: a versioned descriptor naming the helper, adapter, default operation
-and allowed operations. `use Spectre.Server, tools: MyApp.AI` generates private
-helper arities 2 and 3 from the immutable Stack. No package-specific import is
-needed, and arbitrary public functions are not exposed automatically.
-
-A helper appends a command to `ctx`; it does not synchronously call the library.
-Return that context. Pure adapter preparation validates arguments, Spectre
-commits the outbox, then a worker runs the selected cognitive operation or
-submits the governed proposal. Projected results are acquired before dispatching
-`handle_result/3`. `on_result:` selects the callback tag. Unknown operations and
-invalid payloads produce typed rejections; declaration/collision mistakes fail
-early. Never put PIDs, functions or provider clients into persisted arguments.
-
-Cognitive `:safe` operations can replay after interruption. `:never` operations
-return `{:tool_unknown, details}` after uncertain execution and need application
-reconciliation. Governed operations require an allowed operation entry in automatic GAM and follow
-GAM reconciliation; they are not automatically retried as cognitive calls.
-Native GenServer callbacks remain available through the Server behavior; return
-commands through that boundary rather than bypassing its bookkeeping.
+`use Spectre.Server, tools: MyApp.AI` generates helpers from the installed Stack.
+Return the context produced by a helper; the result arrives later through
+`handle_result/3` using its `on_result:` tag. Keep process handles outside durable
+arguments and assigns. The [core tool guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/STACK_TOOLS.md) defines validation, checkpointing and recovery.
 
 ## From Action provider to explicit Server helpers
 
@@ -91,23 +75,6 @@ representation. Treat all site text as external data. Default public URL policy
 checks and egress controls remain necessary independently of GAM consent.
 The [standalone guide](STANDALONE.md) explains protocols, sessions and exports.
 
-## GAM and consent
-
-Follow the [Governed Act Model manifesto](https://spectre.guide/en/governed-act-model).
-Evidence informs decisions; a Mandate bounds authority; an admitted Act is
-recorded before its capability is released. Unresolved obligations remain
-represented by Duties. Package installation and model output are neither a
-Mandate nor end-user consent.
-
-Spectre's default cognitive calls do not ask permission for every model or
-classifier computation. The host chooses the governed surface, which may include
-protected disclosure or resource consumption. Effects requiring consent wait in
-the Server's pending lifecycle; application handlers can confirm, reject,
-suspend, resume or schedule audited closure. A topic change is not consent.
-
-See [core AgentServer](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/AGENT_SERVER.md),
-[pending lifecycle](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/PENDING_LIFECYCLE.md) and
-[Stack tools](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/STACK_TOOLS.md) for host configuration and recovery.
 
 ## Migration checklist
 
@@ -127,34 +94,10 @@ See [core AgentServer](https://github.com/elchemista/spectre/blob/feature/agent-
 
 ## Reusable Skill servers
 
-Use the Stack-generated `lens` helper in a Skill's ordinary
-`Spectre.Server` callbacks. The Agent mounts `Spectre.Skill, server: ...`; each
-mount then owns its GenServer, state, workers, streams, pending intentions and
-checkpoint key. No package-specific Skill adapter or extra installation is needed.
-
-```text
-AgentServer ─────┐
-Research Skill ──┼──→ one automatic GAM boundary → same Domain / authority ledger
-Knowledge Skill ┘
-```
-
-The root creates this connection once and passes it to the children. Do not
-bootstrap another Domain, copy the ledger, implement a Skill Host or extend
-ingress manually. Mounting grants no authority. Governed effects must satisfy
-both root `gam:` operations and the mount's `governed:` references; scoped
-Kinetic references keep their complete mounted scope. Ledger/Lab inspect the
-calling runtime's checkpoint, not a copy of the shared GAM history.
-
-The shared kernel orders admission while workers can run concurrently. Every
-proposal retains its Skill invocation provenance. A confirmation belongs to the
-originating mount and exact presentation, so it cannot approve a different
-Skill's pending request. Timer expiry and closure enter the same lifecycle
-ledger without erasing Acts, uncertain Outcomes or Duties. No per-Skill GAM
-configuration is required.
-
-See the [core shared/local ownership table and confirmation example](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/SKILLS.md),
-[automatic GAM contract](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/MANAGED_GAM.md)
-and [LiveView showcase](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/DEMO.md).
+The same helper works in a mounted Skill Server. Configure GAM on the root;
+the mount's `governed:` references restrict its effect operations. Skills share
+the root Domain while keeping their own state and checkpoints. See the
+[Skill guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/SKILLS.md) for setup and consent routing.
 
 ### Runtime ownership and teardown
 
@@ -164,3 +107,26 @@ Standalone runtimes also close when their owning caller exits. The 0.4 branch
 now explicitly handles owner exit after safe startup; a post-start link alone
 was insufficient to run cleanup during supervisor shutdown. Regressions cover
 normal owner exit and supervised cleanup of two actual Lightpanda processes.
+
+## Require GAM consent for navigation
+
+`open(url)` and `look(url)` can both navigate. Applications requiring consent
+for browsing can bind them to their existing managed GAM operations:
+
+```elixir
+install Spectre.Lens,
+  bind: [open: :browser_open, look: :browser_look, act: :browser_act] do
+  backend(MyApp.Browser)
+end
+```
+
+Lens requires paired `open`/`look` bindings when either is selected, plus distinct
+host operation names. The helpers retain the same arguments and portable
+results. Enable the operations in the root `gam.operations` and apply the
+required consent policy to each. They execute through the existing provider
+only after admission, without retrying uncertain browser effects. `close` still
+releases a known resource. Existing installations without navigation bindings
+retain cognitive `open`/`look` behavior; native provider APIs remain host APIs.
+
+For approvals in a different person's agent chat, see the
+[Pulse external consent guide](https://github.com/elchemista/spectre_pulse/blob/feature/stack-tools-0.4/docs/EXTERNAL_APPROVALS.md).
