@@ -1,19 +1,29 @@
 defmodule Spectre.Lens do
   @moduledoc """
-  Optional, late-bound Spectre Stack facade for the standalone `SpectreLens`
-  perception library.
+  Stack integration for browser perception in Spectre core 0.4.
 
-  Lens owns its package-local `backend` and `policy` declarations:
+  Install Lens in a Stack and declare `use Spectre.Server, tools: MyApp.AI`
+  on the Agent's Server. The installation's `tools/1` descriptor generates
+  the private `lens/3` helper; it is not imported from this module.
 
-      install Spectre.Lens do
+      install Spectre.Lens, bind: [act: :browser_action] do
         backend MyApp.BrowserBackend, instances: 2
-        policy MyApp.WebPolicy
       end
 
-  This module compiles without Spectre. When Spectre is present, configuration
-  stays immutable and browser processes are isolated under an explicitly
-  started `Spectre.Stack.Runtime`; Agents receive the provider binding without
-  owning a second compiler.
+  Start a named `Spectre.Stack.Runtime` for browser resources and pass its
+  name through the Server's `stack_runtime` option. Open, look, and close
+  complete asynchronously through `handle_result/3` with portable values;
+  page content is untrusted evidence. Open and close are not blindly retried
+  after an uncertain result. Hosts must enforce tab ownership and cleanup.
+
+  Binding `:act` declares the host operation to propose; it does not grant
+  authority. The host's admitted executor calls `Spectre.Lens.ServerTool.execute/3`
+  after GAM accepts the candidate. Network and disclosure restrictions remain
+  host responsibilities, including for default cognitive operations.
+
+  This facade compiles without Spectre; the direct `SpectreLens` browser API
+  remains available for standalone applications. See the README, migration
+  guide, and [Governed Act Model](https://spectre.guide/en/governed-act-model).
   """
 
   @version "0.1.0"
@@ -42,7 +52,7 @@ defmodule Spectre.Lens do
       module: __MODULE__,
       version: @version,
       contract: 1,
-      spectre: "~> 0.3.3",
+      spectre: "~> 0.4.0",
       provides: [{:service, :lens}],
       actions: [
         {:lens, :open},
@@ -97,11 +107,73 @@ defmodule Spectre.Lens do
     [{{:lens, :runtime}, child_spec}]
   end
 
+  @doc "Declares generated Server helpers without starting browser resources."
+  def tools(config) do
+    bindings = config |> Map.get(:options, []) |> Keyword.get(:bind, [])
+
+    unless Keyword.keyword?(bindings) and Keyword.keys(bindings) -- [:open, :look, :act] == [] and
+             length(bindings) == length(Enum.uniq(Keyword.keys(bindings))) and
+             Enum.all?(bindings, fn {_, op} -> is_atom(op) and not is_nil(op) end) and
+             length(Keyword.values(bindings)) == length(Enum.uniq(Keyword.values(bindings))),
+           do:
+             raise(
+               ArgumentError,
+               "Lens bind accepts distinct open:, look: and act: host operations"
+             )
+
+    if Keyword.has_key?(bindings, :open) != Keyword.has_key?(bindings, :look),
+      do: raise(ArgumentError, "Lens navigation requires both open: and look: bindings")
+
+    operations = %{
+      open: %{path: :cognitive, retry: :never, max_bytes: 1_048_576},
+      look: %{path: :cognitive, retry: :safe, max_bytes: 1_048_576},
+      close: %{path: :cognitive, retry: :never, max_bytes: 1_048_576}
+    }
+
+    operations =
+      Enum.reduce(bindings, operations, fn {name, operation}, acc ->
+        Map.put(acc, name, %{path: :governed, operation: operation, max_bytes: 1_048_576})
+      end)
+
+    %{
+      lens: %{
+        contract: 1,
+        adapter: Spectre.Lens.ServerTool,
+        default: nil,
+        operations: operations
+      }
+    }
+  end
+
   defmacro __using__(opts) do
     quote do
       register = Function.capture(unquote(@spectre_extension), :register!, 3)
       register.(__MODULE__, Spectre.Lens.Extension, unquote(opts))
     end
+  end
+
+  @doc "Registers bound browser actions for managed GAM execution."
+  @spec effects(map()) :: map()
+  def effects(config) do
+    config
+    |> tools()
+    |> get_in([:lens, :operations])
+    |> Enum.reduce(%{}, fn
+      {name, %{path: :governed, operation: operation}}, effects ->
+        Map.put(effects, operation, %{
+          contract: 1,
+          adapter: Spectre.Lens.ServerTool,
+          operation: name,
+          side_effect: :non_idempotent,
+          material: :arguments,
+          partition: [],
+          schema_hash: nil,
+          config: %{}
+        })
+
+      _, effects ->
+        effects
+    end)
   end
 
   @doc """

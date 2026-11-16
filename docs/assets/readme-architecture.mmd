@@ -1,0 +1,7 @@
+flowchart TB
+  S["AgentServer"] -->|"unbound open / look"| B["Browser runtime"]
+  B -->|"portable tab / untrusted view"| S
+  S -->|"bound navigation / act"| G["GAM admission"]
+  G -->|"admitted effect"| B
+  B -->|"outcome evidence"| G
+  G -->|"governed result"| S

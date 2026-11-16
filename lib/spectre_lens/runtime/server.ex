@@ -27,6 +27,8 @@ defmodule SpectreLens.Runtime do
            url_policy: keyword(),
            pending_tabs: map(),
            caller_monitors: map(),
+           owner: pid(),
+           owner_monitor: reference(),
            destroyed_tabs: MapSet.t({term(), term()})
          }
 
@@ -138,8 +140,9 @@ defmodule SpectreLens.Runtime do
   def release_tab(pid, tab) when is_pid(pid), do: GenServer.cast(pid, {:release_tab, tab})
 
   @impl GenServer
-  def init(opts) do
+  def init({opts, owner}) do
     Process.flag(:trap_exit, true)
+    owner_monitor = Process.monitor(owner)
     session_table = :ets.new(:spectre_lens_sessions, [:set, :protected, :compressed])
     url_policy = SpectreLens.URLPolicy.take_options(opts)
 
@@ -159,6 +162,8 @@ defmodule SpectreLens.Runtime do
          url_policy: url_policy,
          pending_tabs: %{},
          caller_monitors: %{},
+         owner: owner,
+         owner_monitor: owner_monitor,
          destroyed_tabs: MapSet.new()
        }}
     else
@@ -283,6 +288,18 @@ defmodule SpectreLens.Runtime do
         {:noreply, finish_tab_worker(state, pending, result)}
     end
   end
+
+  # Startup stays unlinked until it succeeds so the public open/1 API can return
+  # allocation errors. The resulting link is not an OTP parent link: explicitly
+  # handle owner shutdown so terminate/2 runs before a supervisor kills us.
+  def handle_info({:EXIT, owner, reason}, %{owner: owner} = state),
+    do: {:stop, reason, state}
+
+  def handle_info(
+        {:DOWN, monitor, :process, owner, reason},
+        %{owner: owner, owner_monitor: monitor} = state
+      ),
+      do: {:stop, reason, state}
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) when is_reference(ref) do
     cond do
@@ -862,7 +879,7 @@ defmodule SpectreLens.Runtime do
 
   @spec start_and_link(keyword()) :: GenServer.on_start()
   defp start_and_link(opts) do
-    case GenServer.start(__MODULE__, opts) do
+    case GenServer.start(__MODULE__, {opts, self()}) do
       {:ok, pid} ->
         try do
           Process.link(pid)
