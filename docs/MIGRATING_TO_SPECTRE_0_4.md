@@ -1,9 +1,8 @@
 # Migrating Lens to Spectre core 0.4
 
-This guide describes the implemented `feature/stack-tools-0.4` branch, paired
-with core `feature/agent-server-gam`. Core 0.4 is unreleased here; satellite
-version numbers remain independent. Use the Git/path dependencies in the
-[current README](../README.md), not an assumed published Hex version.
+This guide covers integration with Spectre `~> 0.4.0`. Install the compatible
+package versions shown in the [README](../README.md), then follow the ownership
+and callback changes below. Satellite versions remain independent of core.
 
 ## What changes from core 0.3
 
@@ -27,7 +26,7 @@ workflows explicitly caller-owned. Historical examples remain in
 `use Spectre.Server, tools: MyApp.AI` generates helpers from the installed Stack.
 Return the context produced by a helper; the result arrives later through
 `handle_result/3` using its `on_result:` tag. Keep process handles outside durable
-arguments and assigns. The [core tool guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/STACK_TOOLS.md) defines validation, checkpointing and recovery.
+arguments and assigns. The [core tool guide](https://github.com/elchemista/spectre/blob/0.4.0/docs/STACK_TOOLS.md) defines validation, checkpointing and recovery.
 
 ## From Action provider to explicit Server helpers
 
@@ -97,7 +96,7 @@ The [standalone guide](STANDALONE.md) explains protocols, sessions and exports.
 The same helper works in a mounted Skill Server. Configure GAM on the root;
 the mount's `governed:` references restrict its effect operations. Skills share
 the root Domain while keeping their own state and checkpoints. See the
-[Skill guide](https://github.com/elchemista/spectre/blob/feature/agent-server-gam/docs/SKILLS.md) for setup and consent routing.
+[Skill guide](https://github.com/elchemista/spectre/blob/0.4.0/docs/SKILLS.md) for setup and consent routing.
 
 ### Runtime ownership and teardown
 
@@ -129,4 +128,4 @@ releases a known resource. Existing installations without navigation bindings
 retain cognitive `open`/`look` behavior; native provider APIs remain host APIs.
 
 For approvals in a different person's agent chat, see the
-[Pulse external consent guide](https://github.com/elchemista/spectre_pulse/blob/feature/stack-tools-0.4/docs/EXTERNAL_APPROVALS.md).
+[Pulse external consent guide](https://github.com/elchemista/spectre_pulse/blob/0.1.0/docs/EXTERNAL_APPROVALS.md).

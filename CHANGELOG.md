@@ -2,7 +2,7 @@
 
 All notable changes to Spectre Lens are documented in this file.
 
-## [Unreleased — Spectre core 0.4 integration]
+## 0.1.0 — 2026-11-17
 
 - Exercise the existing 0.4 branch in CI against explicit compatible source checkouts; refresh obsolete dependency locks.
 
@@ -14,8 +14,7 @@ All notable changes to Spectre Lens are documented in this file.
   bindings and preserve cognitive reads for installations without navigation
   bindings. This covers the `look(url)` navigation path as well as `open(url)`.
 
-- Target the unreleased core 0.4 Stack contract on `feature/stack-tools-0.4`;
-  satellite package versions remain independent.
+- Target the Spectre 0.4 Stack contract; satellite package versions remain independent.
 - Register generated Server helpers through `tools/1`, with portable results,
   explicit cognitive scheduling and host-bound governed effects.
 - Document a runnable Stack → Agent → Server setup, with package-specific

@@ -3,6 +3,7 @@ defmodule SpectreLens.GitHubDistributionTest do
 
   test "Spectre uses Hex normally and the explicit compatibility path when requested" do
     config = Mix.Project.config()
+    assert config[:docs][:source_ref] == config[:version]
     dependency = Enum.find(Keyword.fetch!(config, :deps), &(elem(&1, 0) == :spectre))
 
     opts =
@@ -15,7 +16,8 @@ defmodule SpectreLens.GitHubDistributionTest do
 
         _unset ->
           assert {:spectre, requirement, opts} = dependency
-          assert Version.match?("0.3.3", requirement)
+          assert Version.match?("0.4.0", requirement)
+          refute Version.match?("0.3.4", requirement)
           refute Keyword.has_key?(opts, :path)
           opts
       end
