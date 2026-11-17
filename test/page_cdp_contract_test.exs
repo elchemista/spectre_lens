@@ -221,6 +221,15 @@ defmodule SpectreLens.PageCDPContractTest do
     :ok = TestCDP.queue_reply(conn, "LP.getMarkdown", {:error, -32_601, "method missing"})
     assert {:ok, "# Example\n\nBody"} = Lightpanda.markdown(tab, [])
 
+    for {method, operation} <- [
+          {"LP.getSemanticTree", fn -> Lightpanda.semantic_tree(tab, format: :text) end},
+          {"LP.getInteractiveElements", fn -> Lightpanda.interactive_elements(tab, []) end},
+          {"LP.getStructuredData", fn -> Lightpanda.structured_data(tab, []) end}
+        ] do
+      :ok = TestCDP.queue_reply(conn, method, {:error, -32_601, "method missing"})
+      assert {:ok, _projection} = operation.()
+    end
+
     assert :ok = Lightpanda.navigate(tab, "https://example.com", wait_for_content?: false)
     assert {:ok, true} = Lightpanda.evaluate(tab, "true", [])
     assert {:ok, "https://example.com/page"} = Lightpanda.url(tab)
@@ -254,6 +263,13 @@ defmodule SpectreLens.PageCDPContractTest do
 
     assert :ok = Lightpanda.subscribe(instance, self())
     assert Lightpanda.handle_info(:other, instance) == :ignore
+
+    assert {:ok, native_tab} = Lightpanda.new_tab(instance)
+    assert native_tab.protocol == Lightpanda
+    assert native_tab.instance_id == instance.id
+    assert native_tab.endpoint == instance.endpoint
+    assert :ok = Lightpanda.close_tab(native_tab)
+    assert :ok = Lightpanda.handle_tab_closed(native_tab)
   end
 
   test "malformed browser replies become typed errors instead of crashes", %{conn: conn, tab: tab} do

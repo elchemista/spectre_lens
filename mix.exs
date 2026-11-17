@@ -56,7 +56,7 @@ defmodule SpectreLens.MixProject do
       {:jason, "~> 1.4.5"},
       {:req, "~> 0.7.1"},
       {:websockex, "~> 0.5.1"},
-      {:erlexec, "~> 2.3.4"},
+      {:erlexec, "~> 2.6.0"},
       {:telemetry, "~> 1.4"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

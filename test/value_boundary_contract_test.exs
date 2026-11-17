@@ -116,6 +116,35 @@ defmodule SpectreLens.ValueBoundaryContractTest do
     refute TabRef.matches?(generated, %Tab{instance_id: nil})
   end
 
+  test "checkpoint tab references validate optional fields and reject incompatible versions" do
+    assert {:ok, ref} =
+             TabRef.from_map(%{
+               id: "tab",
+               instance_id: "browser",
+               target_id: "target",
+               session_id: "session"
+             })
+
+    assert ref.version == 1
+    assert ref.target_id == "target"
+    assert ref.session_id == "session"
+
+    for {field, value, expected} <- [
+          {:id, "", {:invalid_lens_tab_ref_field, "id", ""}},
+          {:target_id, 42, {:invalid_lens_tab_ref_field, "target_id", 42}},
+          {:session_id, "", {:invalid_lens_tab_ref_field, "session_id", ""}},
+          {:version, 2, {:unsupported_lens_tab_ref_version, 2}}
+        ] do
+      assert {:error, ^expected} =
+               TabRef.from_map(Map.put(%{id: "tab", instance_id: 1}, field, value))
+    end
+
+    assert {:error, {:invalid_lens_tab_ref, []}} = TabRef.from_map([])
+
+    assert {:error, {:nonportable_lens_tab_instance_id, :browser}} =
+             TabRef.to_map(%TabRef{id: "tab", instance_id: :browser})
+  end
+
   test "error constructors retain operation context for agents" do
     assert Exception.message(SpectreLens.CDPError.new(7, "failed")) ==
              "CDP command failed: 7 failed"

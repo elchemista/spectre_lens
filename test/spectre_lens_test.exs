@@ -44,6 +44,12 @@ defmodule SpectreLensTest do
     def call(_context, _opts), do: raise("plug failed")
   end
 
+  defmodule OfflineProjectionProtocol do
+    use SpectreLens.Protocol.Adapter
+    def evaluate(_tab, _expression, _opts), do: {:error, :metadata_unavailable}
+    def links(_tab, _opts), do: {:error, :projection_unavailable}
+  end
+
   defmodule TelemetryHandler do
     def handle_event(event, measurements, metadata, parent) do
       send(parent, {:telemetry_event, event, measurements, metadata})
@@ -1298,6 +1304,64 @@ defmodule SpectreLensTest do
       assert doc.url == "https://example.com/llms.txt"
     end
 
+    test "header discovery accepts adapter header lists and ignores malformed replies" do
+      page = "https://example.com/docs"
+      index = "https://example.com/llms.txt"
+      header = "</llms.txt>; rel=\"llms.txt\""
+
+      for headers <- [[{:link, header}], [:invalid, {17, :ignored}, {"LiNk", [header]}]] do
+        assert {:ok, %LlmsTxt{url: ^index}} =
+                 LlmsTxt.discover_from_page(page, [],
+                   network_policy: :any,
+                   header_fetcher: fn _, _ -> {:ok, headers} end,
+                   fetcher: fn ^index, _ -> {:ok, "# Header context"} end
+                 )
+      end
+
+      for header_fetcher <- [
+            fn _, _ -> {:error, :offline} end,
+            fn _, _ -> :unexpected end,
+            fn _, _ -> throw(:disconnected) end,
+            fn _, _ -> {:ok, :invalid_headers} end
+          ] do
+        assert {:error, {:llms_txt_not_found, :no_page_metadata_or_header, []}} =
+                 LlmsTxt.discover_from_page(page, [],
+                   network_policy: :any,
+                   header_fetcher: header_fetcher,
+                   fetcher: fn _, _ -> flunk("invalid headers reached document transport") end
+                 )
+      end
+    end
+
+    test "missing full context preserves the index and fetcher throws remain explicit" do
+      index = "https://example.com/llms.txt"
+
+      assert {:ok, doc} =
+               LlmsTxt.discover(index,
+                 network_policy: :any,
+                 full?: true,
+                 fetcher: fn
+                   ^index, _ -> {:ok, "# Index"}
+                   _, _ -> {:error, :offline}
+                 end
+               )
+
+      assert [{:llms_full_not_found, :offline, _}] = doc.warnings
+      assert {:ok, "# Index"} = LlmsTxt.to_context(doc, prefer: :both, raw?: true)
+
+      assert {:error, {:llms_txt_not_found, {:llms_fetcher_failed, {:throw, :offline}}, [^index]}} =
+               LlmsTxt.discover(index,
+                 network_policy: :any,
+                 fetcher: fn _, _ -> throw(:offline) end
+               )
+
+      assert {:error, :no_llms_context} = LlmsTxt.to_context(%LlmsTxt{})
+      assert {:error, :no_llms_context} = LlmsTxt.to_context(%LlmsTxt{}, prefer: :both)
+
+      assert {:ok, "# Full"} =
+               LlmsTxt.to_context(%LlmsTxt{full_content: "# Full"}, prefer: :both, raw?: true)
+    end
+
     test "falls back to index context when full context is missing" do
       doc = %LlmsTxt{content: "# Index", full_content: nil}
       assert {:ok, "# Index"} = LlmsTxt.to_context(doc, raw?: true)
@@ -1408,6 +1472,30 @@ defmodule SpectreLensTest do
       assert view.llms == nil
       assert view.llms_context == nil
       refute_receive {:fetched, _url}
+    end
+
+    test "optional context failures warn while requested projections record errors" do
+      context = %Context{
+        tab: %Tab{protocol: OfflineProjectionProtocol},
+        view: %View{url: "https://example.test"},
+        include: []
+      }
+
+      optional = Plugs.LlmsTxt.call(context, llms?: true)
+      assert optional.view.errors == []
+      assert optional.view.warnings == [{:llms, :metadata_unavailable}]
+
+      required = Plugs.LlmsTxt.call(%{context | include: [:llms]}, [])
+      assert required.view.errors == [{:llms, :metadata_unavailable}]
+      assert required.view.warnings == []
+
+      links = Plugs.Links.call(%{context | include: [:links]}, [])
+      assert links.view.errors == [{:links, :projection_unavailable}]
+      assert links.view.links == []
+
+      no_url = %{context | view: %View{}}
+      assert Plugs.LlmsTxt.call(no_url, llms?: true) == no_url
+      assert Plugs.NormalizeMarkdown.call(no_url, []) == no_url
     end
 
     test "agent_context wraps page text in a prompt-injection trust boundary" do

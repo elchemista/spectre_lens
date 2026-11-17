@@ -48,6 +48,7 @@ defmodule Spectre.Lens.ServerToolTest do
        }}
     end
 
+    def navigate(_tab, "https://unavailable.test", _opts), do: {:error, :navigation_failed}
     def navigate(_tab, _url, _opts), do: :ok
 
     def click(tab, ref, _opts) do
@@ -112,6 +113,8 @@ defmodule Spectre.Lens.ServerToolTest do
              ServerTool.prepare(:open, ["https://example.test"], trusted)
 
     assert {:ok, _} = ServerTool.prepare(:look, [tab], trusted)
+    assert {:ok, _} = ServerTool.prepare(:look, ["https://example.test"], trusted)
+    assert {:ok, _} = ServerTool.prepare(:close, [%TabRef{id: "tab", instance_id: 1}], trusted)
 
     assert {:ok, _} =
              ServerTool.prepare(:act, [tab, %{"type" => "click", "text" => "Save"}], trusted)
@@ -123,6 +126,7 @@ defmodule Spectre.Lens.ServerToolTest do
              ServerTool.prepare(:act, [tab, %{"type" => "click", "runtime" => self()}], trusted)
 
     assert {:error, :lens_tab_reference_required} = ServerTool.prepare(:look, [self()], trusted)
+    assert {:error, :invalid_lens_request} = ServerTool.prepare(:unknown, [], trusted)
   end
 
   test "view projection preserves untrusted content without live handles or native records" do
@@ -140,6 +144,51 @@ defmodule Spectre.Lens.ServerToolTest do
     assert is_binary(result.context)
     assert {:ok, _} = Spectre.GAM.Canonical.Value.encode(result)
     assert {:error, :nonportable_lens_result} = ServerTool.project(:open, {:ok, %{tab: self()}})
+
+    assert {:error, :nonportable_lens_result} =
+             ServerTool.project(:look, {:ok, %{view | links: [%URI{path: "/private"}]}})
+
+    assert {:ok, {:ok, %{receipt: {:snapshot, 1}}}} =
+             ServerTool.project(:open, {:ok, %{receipt: {:snapshot, 1}}})
+
+    assert {:ok, {:error, :browser_down}} = ServerTool.project(:look, {:error, :browser_down})
+    assert {:ok, :ok} = ServerTool.project(:close, :ok)
+    assert {:error, :invalid_lens_result} = ServerTool.project(:look, :unexpected)
+  end
+
+  test "failed tab creation releases its reservation and retains outcome uncertainty" do
+    stack_runtime =
+      start_supervised!(
+        {Spectre.Stack.Runtime, stack: Stack, packages: [lens: [test_pid: self()]]}
+      )
+
+    context = %{
+      agent: Agent,
+      options: [stack_runtime: stack_runtime, lens_opts: [network_policy: :any]]
+    }
+
+    assert {:error, :definitive_no_effect, {:invalid_lens_arguments, _}} =
+             ServerTool.execute_effect(:open, %{}, context)
+
+    refute_received {:browser_closed, _}
+
+    assert {:error, :ambiguous, :navigation_failed} =
+             ServerTool.execute_effect(:open, %{"url" => "https://unavailable.test"}, context)
+
+    assert_receive {:browser_closed, "tool-tab"}
+    assert {:ok, runtime} = Spectre.Lens.runtime(Agent, context.options)
+    assert %{instances: [%{active_tabs: 0, pending_tabs: 0}]} = SpectreLens.Runtime.info(runtime)
+
+    assert {:ok, tab} =
+             ServerTool.execute_effect(:open, %{"url" => "https://example.test"}, context)
+
+    assert {:ok, %{closed: true}} =
+             ServerTool.invoke(:close, %{"tab" => tab}, %{service_context: context})
+
+    assert_receive {:browser_closed, "tool-tab"}
+
+    assert {:error, :definitive_no_effect, :invalid_lens_effect} =
+             ServerTool.execute_effect(:close, %{}, context)
   end
 
   test "executor adapter acts once through the real provider and close releases the resource" do
